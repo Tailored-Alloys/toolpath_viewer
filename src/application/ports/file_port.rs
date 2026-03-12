@@ -1,0 +1,65 @@
+//! File Port
+//!
+//! Interface for file loading operations.
+
+use crate::domain::entities::Toolpath;
+use std::path::Path;
+use thiserror::Error;
+
+/// Errors that can occur during file operations
+#[derive(Debug, Error)]
+pub enum FileError {
+    #[error("File not found: {0}")]
+    NotFound(String),
+    
+    #[error("Permission denied: {0}")]
+    PermissionDenied(String),
+    
+    #[error("Invalid file format: {0}")]
+    InvalidFormat(String),
+    
+    #[error("Decompression error: {0}")]
+    DecompressionError(String),
+    
+    #[error("Parse error at line {line}: {message}")]
+    ParseError { line: usize, message: String },
+    
+    #[error("IO error: {0}")]
+    IoError(#[from] std::io::Error),
+    
+    #[error("Unsupported format: {0}")]
+    UnsupportedFormat(String),
+}
+
+/// Result type for file operations
+pub type FileResult<T> = Result<T, FileError>;
+
+/// Port for file loading operations
+pub trait FileLoader: Send + Sync {
+    /// Load a toolpath from a file
+    fn load(&self, path: &Path) -> FileResult<Toolpath>;
+    
+    /// Get supported file extensions
+    fn supported_extensions(&self) -> &[&str];
+    
+    /// Check if this loader can handle the given file
+    fn can_load(&self, path: &Path) -> bool {
+        if let Some(ext) = path.extension() {
+            if let Some(ext_str) = ext.to_str() {
+                return self.supported_extensions()
+                    .iter()
+                    .any(|e| e.eq_ignore_ascii_case(ext_str));
+            }
+        }
+        false
+    }
+}
+
+/// Port for file saving operations (future use)
+pub trait FileSaver: Send + Sync {
+    /// Save a toolpath to a file
+    fn save(&self, toolpath: &Toolpath, path: &Path) -> FileResult<()>;
+    
+    /// Get supported file extensions for saving
+    fn supported_extensions(&self) -> &[&str];
+}

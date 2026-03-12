@@ -1,0 +1,517 @@
+//! OpenGL Renderer Implementation
+//!
+//! Implements the Renderer port using OpenGL.
+
+use crate::application::ports::{DisplayOptions, ParameterMode, RenderError, RenderResult, Renderer, ViewState};
+use crate::application::use_cases::ColorScheme;
+use crate::domain::entities::{Layer, Vector, VectorType};
+use crate::domain::value_objects::{Color, Point2D};
+use crate::infrastructure::rendering::{
+    LineBatch, ShaderProgram,
+    DEFAULT_FRAGMENT_SHADER, DEFAULT_VERTEX_SHADER,
+};
+use log::{debug, info};
+
+/// Create an orthographic projection matrix
+fn ortho(left: f32, right: f32, bottom: f32, top: f32, near: f32, far: f32) -> [f32; 16] {
+    let tx = -(right + left) / (right - left);
+    let ty = -(top + bottom) / (top - bottom);
+    let tz = -(far + near) / (far - near);
+
+    [
+        2.0 / (right - left), 0.0, 0.0, 0.0,
+        0.0, 2.0 / (top - bottom), 0.0, 0.0,
+        0.0, 0.0, -2.0 / (far - near), 0.0,
+        tx, ty, tz, 1.0,
+    ]
+}
+
+/// Create a view matrix from view state
+fn view_matrix(view: &ViewState) -> [f32; 16] {
+    let scale = view.zoom;
+    let tx = -view.center.x * scale;
+    let ty = -view.center.y * scale;
+
+    [
+        scale, 0.0, 0.0, 0.0,
+        0.0, scale, 0.0, 0.0,
+        0.0, 0.0, 1.0, 0.0,
+        tx, ty, 0.0, 1.0,
+    ]
+}
+
+/// OpenGL 2D renderer
+///
+/// Arrow angle half-width in radians (~25°).
+const ARROW_HALF_ANGLE: f32 = 0.4363; // std::f32::consts is not const-fn friendly, pre-computed
+
+/// Add an arrowhead to `batch` at `tip` pointing in direction (`dx`, `dy`).
+/// `arm_len` controls the size of the arrow arms.
+fn add_arrowhead(batch: &mut LineBatch, tip: &Point2D, dx: f32, dy: f32, arm_len: f32, color: &Color) {
+    let len = (dx * dx + dy * dy).sqrt();
+    if len < 1e-12 {
+        return;
+    }
+    let ux = dx / len;
+    let uy = dy / len;
+
+    // Back direction
+    let bx = -ux;
+    let by = -uy;
+
+    let cos_a = ARROW_HALF_ANGLE.cos();
+    let sin_a = ARROW_HALF_ANGLE.sin();
+
+    // Left arm
+    let lx = bx * cos_a - by * sin_a;
+    let ly = bx * sin_a + by * cos_a;
+    let left = Point2D::new(tip.x + arm_len * lx, tip.y + arm_len * ly);
+
+    // Right arm
+    let rx = bx * cos_a + by * sin_a;
+    let ry = -bx * sin_a + by * cos_a;
+    let right = Point2D::new(tip.x + arm_len * rx, tip.y + arm_len * ry);
+
+    batch.add_line(tip, &left, color);
+    batch.add_line(tip, &right, color);
+}
+
+/// Add a star/asterisk marker (*) to `batch` centered at `center`.
+/// Draws 3 crossing line segments (|, /, \) of half-length `r`.
+fn add_star_marker(batch: &mut LineBatch, center: &Point2D, r: f32, color: &Color) {
+    // Vertical line |
+    let top = Point2D::new(center.x, center.y + r);
+    let bot = Point2D::new(center.x, center.y - r);
+    batch.add_line(&top, &bot, color);
+
+    // 60° line /
+    let cos60: f32 = 0.5;
+    let sin60: f32 = 0.866_025_4;
+    let a = Point2D::new(center.x + r * cos60, center.y + r * sin60);
+    let b = Point2D::new(center.x - r * cos60, center.y - r * sin60);
+    batch.add_line(&a, &b, color);
+
+    // 120° line \
+    let c = Point2D::new(center.x - r * cos60, center.y + r * sin60);
+    let d = Point2D::new(center.x + r * cos60, center.y - r * sin60);
+    batch.add_line(&c, &d, color);
+}
+
+/// Compute marker size from layer bounds (0.5% of bounding diagonal).
+fn compute_marker_size(layer: &Layer) -> f32 {
+    if let Some((min_pt, max_pt)) = layer.bounds() {
+        let dx = max_pt.x - min_pt.x;
+        let dy = max_pt.y - min_pt.y;
+        let diag = (dx * dx + dy * dy).sqrt();
+        (diag * 0.005).max(0.1)
+    } else {
+        1.0 // fallback
+    }
+}
+
+pub struct GlRenderer {
+    width: u32,
+    height: u32,
+    /// Horizontal offset for centering (to account for UI panel)
+    view_offset_x: f32,
+    /// Vertical offset for centering (to account for top toolbar)
+    view_offset_y: f32,
+    shader: Option<ShaderProgram>,
+    contour_batch: LineBatch,
+    boundary_batch: LineBatch,
+    hatch_batch: LineBatch,
+    arrow_batch: LineBatch,
+    marker_batch: LineBatch,
+    color_scheme: ColorScheme,
+    initialized: bool,
+    /// Track last hatch count to reduce log spam
+    last_hatch_count: usize,
+    /// Whether we've logged shader/uniform diagnostics
+    logged_once: bool,
+}
+
+impl GlRenderer {
+    /// Create a new OpenGL renderer
+    pub fn new() -> Self {
+        Self {
+            width: 800,
+            height: 600,
+            view_offset_x: 0.0,
+            view_offset_y: 0.0,
+            shader: None,
+            contour_batch: LineBatch::new(),
+            boundary_batch: LineBatch::new(),
+            hatch_batch: LineBatch::new(),
+            arrow_batch: LineBatch::new(),
+            marker_batch: LineBatch::new(),
+            color_scheme: ColorScheme::default(),
+            initialized: false,
+            last_hatch_count: usize::MAX,
+            logged_once: false,
+        }
+    }
+
+    /// Set color scheme
+    pub fn set_color_scheme(&mut self, scheme: ColorScheme) {
+        self.color_scheme = scheme;
+    }
+
+    /// Set horizontal view offset (to shift content away from UI panel)
+    pub fn set_view_offset_x(&mut self, offset: f32) {
+        self.view_offset_x = offset;
+    }
+
+    /// Set vertical view offset (to shift content away from top toolbar)
+    pub fn set_view_offset_y(&mut self, offset: f32) {
+        self.view_offset_y = offset;
+    }
+
+    /// Initialize OpenGL state
+    fn init_gl(&mut self) -> RenderResult<()> {
+        unsafe {
+            // Enable multisampling
+            gl::Enable(gl::MULTISAMPLE);
+            
+            // Enable blending
+            gl::Enable(gl::BLEND);
+            gl::BlendFunc(gl::SRC_ALPHA, gl::ONE_MINUS_SRC_ALPHA);
+            
+            // Line settings
+            gl::Enable(gl::LINE_SMOOTH);
+            gl::Hint(gl::LINE_SMOOTH_HINT, gl::NICEST);
+        }
+
+        // Create shader program
+        self.shader = Some(
+            ShaderProgram::new(DEFAULT_VERTEX_SHADER, DEFAULT_FRAGMENT_SHADER)
+                .map_err(|e| RenderError::ShaderError(e))?
+        );
+
+        self.initialized = true;
+        info!("OpenGL renderer initialized");
+        
+        Ok(())
+    }
+
+    /// Prepare a layer for rendering (populate batches)
+    pub fn prepare_layer(&mut self, layer: &Layer, options: &DisplayOptions) {
+        self.contour_batch.clear();
+        self.boundary_batch.clear();
+        self.hatch_batch.clear();
+        self.arrow_batch.clear();
+        self.marker_batch.clear();
+
+        let dim_color = Color::rgb(0.3, 0.3, 0.3);
+        let star_color = Color::rgb(1.0, 0.4, 0.0);  // orange stars
+
+        let marker_size = compute_marker_size(layer);
+        let arrow_arm = marker_size * 0.8;
+        let star_radius = marker_size * 0.6;
+        // Place arrows every `arrow_spacing` world-units along polylines
+        let arrow_spacing = marker_size * 8.0;
+
+        for vector in &layer.vectors {
+            // Determine color: parameter gradient when a mode is active, else type-based
+            let color = if let Some(param_mode) = options.param_mode {
+                let param_value = match param_mode {
+                    ParameterMode::Power => vector.parameters.power,
+                    ParameterMode::Speed => vector.parameters.speed,
+                    ParameterMode::WaitTime => vector.parameters.wait_time,
+                };
+                match param_value {
+                    Some(val) => {
+                        if val < options.param_filter_min || val > options.param_filter_max {
+                            continue; // filtered out
+                        }
+                        let range = options.param_filter_max - options.param_filter_min;
+                        let t = if range > 0.0 {
+                            (val - options.param_filter_min) / range
+                        } else {
+                            0.5
+                        };
+                        Color::heat_gradient(t)
+                    }
+                    None => dim_color, // no param data, show dimmed
+                }
+            } else {
+                *self.color_scheme.color_for_type(vector.vector_type)
+            };
+
+            // Track whether this vector is visible (for arrow/marker placement)
+            let mut visible = false;
+
+            match vector.vector_type {
+                VectorType::Boundary => {
+                    if options.show_slices {
+                        self.boundary_batch.add_polyline(&vector.points, &color);
+                        visible = true;
+                    }
+                }
+                VectorType::Contour | VectorType::BaseContour | VectorType::CoincidingContour => {
+                    if options.show_contours {
+                        self.contour_batch.add_polyline(&vector.points, &color);
+                        visible = true;
+                    }
+                }
+                VectorType::DepthContour => {
+                    if options.show_depth_contours {
+                        self.contour_batch.add_polyline(&vector.points, &color);
+                        visible = true;
+                    }
+                }
+                VectorType::Hatch => {
+                    if options.show_hatches && vector.points.len() >= 2 {
+                        self.hatch_batch.add_line(
+                            &vector.points[0],
+                            &vector.points[1],
+                            &color,
+                        );
+                        visible = true;
+                    }
+                }
+                VectorType::Support | VectorType::Travel => {
+                    self.contour_batch.add_polyline(&vector.points, &color);
+                    visible = true;
+                }
+            }
+
+            if !visible {
+                continue;
+            }
+
+            // --- Direction arrows ---
+            if options.show_arrows && vector.points.len() >= 2 {
+                match vector.vector_type {
+                    VectorType::Hatch => {
+                        // Arrow at the end of each hatch, size relative to hatch length
+                        let p0 = &vector.points[0];
+                        let p1 = &vector.points[1];
+                        let dx = p1.x - p0.x;
+                        let dy = p1.y - p0.y;
+                        let hatch_len = (dx * dx + dy * dy).sqrt();
+                        let hatch_arm = (hatch_len * 0.25).min(arrow_arm);
+                        add_arrowhead(&mut self.arrow_batch, p1, dx, dy, hatch_arm, &color);
+                    }
+                    VectorType::Contour | VectorType::BaseContour
+                    | VectorType::CoincidingContour | VectorType::DepthContour
+                    | VectorType::Boundary => {
+                        // Place arrows at regular intervals along the polyline
+                        let mut accum = arrow_spacing * 0.5; // start offset
+                        for pair in vector.points.windows(2) {
+                            let dx = pair[1].x - pair[0].x;
+                            let dy = pair[1].y - pair[0].y;
+                            let seg_len = (dx * dx + dy * dy).sqrt();
+                            accum += seg_len;
+                            if accum >= arrow_spacing {
+                                accum -= arrow_spacing;
+                                add_arrowhead(&mut self.arrow_batch, &pair[1], dx, dy, arrow_arm, &color);
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+
+            // --- Power star markers ---
+            if options.show_power_markers && vector.parameters.power.is_some() && vector.points.len() >= 2 {
+                match vector.vector_type {
+                    VectorType::Hatch => {
+                        // Star at midpoint
+                        let p0 = &vector.points[0];
+                        let p1 = &vector.points[1];
+                        let mid = Point2D::new(
+                            (p0.x + p1.x) * 0.5,
+                            (p0.y + p1.y) * 0.5,
+                        );
+                        add_star_marker(&mut self.marker_batch, &mid, star_radius, &star_color);
+                    }
+                    _ => {
+                        // Stars at regular intervals along polylines
+                        let mut accum = arrow_spacing * 0.5;
+                        for pair in vector.points.windows(2) {
+                            let dx = pair[1].x - pair[0].x;
+                            let dy = pair[1].y - pair[0].y;
+                            let seg_len = (dx * dx + dy * dy).sqrt();
+                            accum += seg_len;
+                            if accum >= arrow_spacing {
+                                accum -= arrow_spacing;
+                                add_star_marker(&mut self.marker_batch, &pair[1], star_radius, &star_color);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        self.contour_batch.set_line_width(options.line_width);
+        self.boundary_batch.set_line_width(options.line_width * 1.5);
+        self.hatch_batch.set_line_width(options.line_width * 0.8);
+        self.arrow_batch.set_line_width(options.line_width * 0.8);
+        self.marker_batch.set_line_width(options.line_width * 1.5);
+
+        let hatch_count = self.hatch_batch.vertex_count() / 2;
+        if hatch_count != self.last_hatch_count {
+            info!(
+                "Prepared layer: {} contour verts, {} boundary verts, {} hatch lines | show_hatches={}",
+                self.contour_batch.vertex_count(),
+                self.boundary_batch.vertex_count(),
+                hatch_count,
+                options.show_hatches
+            );
+            self.last_hatch_count = hatch_count;
+        }
+    }
+
+    /// Render the prepared layer
+    fn render_prepared(&mut self, view: &ViewState) -> RenderResult<()> {
+        let shader = self.shader.as_ref().ok_or_else(|| {
+            RenderError::InvalidState("Shader not initialized".to_string())
+        })?;
+
+        shader.use_program();
+
+        // Set up projection matrix (screen space, origin at center)
+        // Apply offsets to shift content away from UI panels
+        let half_w = (self.width as f32) / 2.0;
+        let half_h = (self.height as f32) / 2.0;
+        let off_x = self.view_offset_x;
+        let off_y = self.view_offset_y;
+        let projection = ortho(-half_w + off_x, half_w + off_x, -half_h + off_y, half_h + off_y, -1.0, 1.0);
+        shader.set_mat4("uProjection", &projection);
+
+        // Set up view matrix (pan and zoom)
+        let view_mat = view_matrix(view);
+        shader.set_mat4("uView", &view_mat);
+
+        // One-time diagnostic: verify shader pipeline is working
+        if !self.logged_once {
+            let proj_loc = shader.get_uniform_location("uProjection");
+            let view_loc = shader.get_uniform_location("uView");
+            info!("Shader program={}, uProjection loc={}, uView loc={}", shader.id, proj_loc, view_loc);
+            info!("View: center=({:.3}, {:.3}), zoom={:.4}", view.center.x, view.center.y, view.zoom);
+            info!("Projection: L={:.1}, R={:.1}, B={:.1}, T={:.1}",
+                -half_w + off_x, half_w + off_x, -half_h + off_y, half_h + off_y);
+            info!("Renderer: {}x{}, offset_x={}, offset_y={}", self.width, self.height, off_x, off_y);
+            unsafe {
+                let err = gl::GetError();
+                if err != gl::NO_ERROR {
+                    info!("GL error before batch render: 0x{:X}", err);
+                }
+            }
+            self.logged_once = true;
+        }
+
+        // Render batches in order (back to front)
+        self.hatch_batch.render();
+        self.contour_batch.render();
+        self.boundary_batch.render();
+        self.arrow_batch.render();
+        self.marker_batch.render();
+
+        Ok(())
+    }
+}
+
+impl Default for GlRenderer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Renderer for GlRenderer {
+    fn initialize(&mut self, width: u32, height: u32) -> RenderResult<()> {
+        self.width = width;
+        self.height = height;
+        
+        if !self.initialized {
+            self.init_gl()?;
+        }
+        
+        self.resize(width, height)
+    }
+
+    fn resize(&mut self, width: u32, height: u32) -> RenderResult<()> {
+        self.width = width;
+        self.height = height;
+        
+        unsafe {
+            gl::Viewport(0, 0, width as i32, height as i32);
+        }
+        
+        Ok(())
+    }
+
+    fn clear(&mut self, color: &Color) -> RenderResult<()> {
+        unsafe {
+            gl::ClearColor(color.r, color.g, color.b, color.a);
+            gl::Clear(gl::COLOR_BUFFER_BIT);
+        }
+        Ok(())
+    }
+
+    fn begin_frame(&mut self) -> RenderResult<()> {
+        // Comprehensive GL state reset — egui_glow modifies many states
+        // and only restores scissor test after painting.
+        // It leaves: blend func=(ONE, ONE_MINUS_SRC_ALPHA), its VBO bound
+        // to GL_ARRAY_BUFFER, its program active, depth/cull/stencil disabled.
+        unsafe {
+            // Unbind any leftover objects from egui
+            gl::BindFramebuffer(gl::FRAMEBUFFER, 0);
+            gl::BindVertexArray(0);
+            gl::BindBuffer(gl::ARRAY_BUFFER, 0);
+            gl::BindBuffer(gl::ELEMENT_ARRAY_BUFFER, 0);
+            gl::UseProgram(0);
+
+            // Disable tests that could reject fragments
+            gl::Disable(gl::SCISSOR_TEST);
+            gl::Disable(gl::DEPTH_TEST);
+            gl::Disable(gl::STENCIL_TEST);
+            gl::Disable(gl::CULL_FACE);
+
+            // Ensure all color channels are writable
+            gl::ColorMask(gl::TRUE, gl::TRUE, gl::TRUE, gl::TRUE);
+
+            // Set our rendering state
+            gl::Viewport(0, 0, self.width as i32, self.height as i32);
+            gl::Enable(gl::BLEND);
+            gl::BlendFunc(gl::SRC_ALPHA, gl::ONE_MINUS_SRC_ALPHA);
+            gl::Enable(gl::LINE_SMOOTH);
+        }
+        Ok(())
+    }
+
+    fn end_frame(&mut self) -> RenderResult<()> {
+        unsafe {
+            gl::Flush();
+        }
+        Ok(())
+    }
+
+    fn render_layer(
+        &mut self,
+        layer: &Layer,
+        view: &ViewState,
+        options: &DisplayOptions,
+    ) -> RenderResult<()> {
+        self.prepare_layer(layer, options);
+        self.render_prepared(view)
+    }
+
+    fn render_vector(
+        &mut self,
+        vector: &Vector,
+        color: &Color,
+        line_width: f32,
+    ) -> RenderResult<()> {
+        // For single vector rendering, use a temporary batch
+        let mut batch = LineBatch::new();
+        batch.add_polyline(&vector.points, color);
+        batch.set_line_width(line_width);
+        batch.render();
+        Ok(())
+    }
+
+    fn viewport_size(&self) -> (u32, u32) {
+        (self.width, self.height)
+    }
+}
