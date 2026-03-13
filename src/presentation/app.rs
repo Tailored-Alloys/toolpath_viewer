@@ -111,7 +111,12 @@ impl App {
             match load_file(&load_use_case, file_path, &mut state, width, height) {
                 Err(e) => error!("Failed to load file: {}", e),
                 Ok(ranges) => {
-                    ui.state.param_ranges = ranges;
+                    ui.state.param_ranges = ranges.clone();
+                    // Set wait time range for marker coloring
+                    if let Some((wmin, wmax)) = ranges.wait_time {
+                        state.render.display_options.wait_time_min = wmin;
+                        state.render.display_options.wait_time_max = wmax;
+                    }
                     let nav_state = state.navigation.state();
                     ui.update_from_navigation(
                         nav_state.current_index,
@@ -262,7 +267,7 @@ fn handle_event(
         }
 
         AppEvent::Redraw => {
-            if let Err(e) = render_frame(window, state, renderer, ui) {
+            if let Err(e) = render_frame(window, state, renderer, ui, load_use_case) {
                 error!("Render error: {}", e);
             }
         }
@@ -312,7 +317,7 @@ fn handle_event(
         }
 
         AppEvent::KeyAction(action) => {
-            handle_key_action(action, state, window, load_use_case);
+            handle_key_action(action, state, window, ui, load_use_case);
         }
 
         AppEvent::FileDropped(path) => {
@@ -320,7 +325,12 @@ fn handle_event(
             match load_file(load_use_case, &path, state, width, height) {
                 Err(e) => error!("Failed to load dropped file: {}", e),
                 Ok(ranges) => {
-                    ui.state.param_ranges = ranges;
+                    ui.state.param_ranges = ranges.clone();
+                    // Set wait time range for marker coloring
+                    if let Some((wmin, wmax)) = ranges.wait_time {
+                        state.render.display_options.wait_time_min = wmin;
+                        state.render.display_options.wait_time_max = wmax;
+                    }
                     update_window_title(window, state);
                 }
             }
@@ -336,7 +346,8 @@ fn handle_key_action(
     action: InputAction,
     state: &mut AppState,
     window: &mut AppWindow,
-    _load_use_case: &LoadToolpathUseCase,
+    ui: &mut UiRenderer,
+    load_use_case: &LoadToolpathUseCase,
 ) {
     match action {
         InputAction::NextLayer => {
@@ -426,13 +437,44 @@ fn handle_key_action(
         }
 
         InputAction::OpenFile => {
-            // Would open file dialog here
-            info!("Open file dialog not yet implemented");
+            open_file_dialog(window, state, ui, load_use_case);
         }
 
         InputAction::Quit => {
             // Handled in main event handler
         }
+    }
+}
+
+/// Open a native file dialog and load the selected file
+fn open_file_dialog(
+    window: &mut AppWindow,
+    state: &mut AppState,
+    ui: &mut UiRenderer,
+    load_use_case: &LoadToolpathUseCase,
+) {
+    let file = rfd::FileDialog::new()
+        .add_filter("ILT/CLI Files", &["ilt", "cli"])
+        .add_filter("All Files", &["*"])
+        .set_title("Open Toolpath File")
+        .pick_file();
+
+    if let Some(path) = file {
+        let (width, height) = window.size();
+        match load_file(load_use_case, path.to_string_lossy().as_ref(), state, width, height) {
+            Err(e) => error!("Failed to load file: {}", e),
+            Ok(ranges) => {
+                ui.state.param_ranges = ranges.clone();
+                // Set wait time range for marker coloring
+                if let Some((wmin, wmax)) = ranges.wait_time {
+                    state.render.display_options.wait_time_min = wmin;
+                    state.render.display_options.wait_time_max = wmax;
+                }
+                update_window_title(window, state);
+                info!("Loaded file: {}", path.display());
+            }
+        }
+        window.request_redraw();
     }
 }
 
@@ -442,9 +484,15 @@ fn render_frame(
     state: &mut AppState,
     renderer: &mut GlRenderer,
     ui: &mut UiRenderer,
+    load_use_case: &LoadToolpathUseCase,
 ) -> Result<()> {
     // 1. Run egui logic to get current toggle/slider values (no painting yet)
     let ui_output = ui.run_ui(&window.window);
+
+    // Handle file open request from Load button
+    if ui_output.open_file_requested {
+        open_file_dialog(window, state, ui, load_use_case);
+    }
 
     // Handle layer changes from slider/buttons
     let nav_state = state.navigation.state();
@@ -460,7 +508,7 @@ fn render_frame(
         || state.render.display_options.show_contours != ui_output.show_contours
         || state.render.display_options.show_hatches != ui_output.show_hatches
         || state.render.display_options.show_arrows != ui_output.show_arrows
-        || state.render.display_options.show_power_markers != ui_output.show_power_markers
+        || state.render.display_options.show_wait_markers != ui_output.show_wait_markers
         || state.render.display_options.param_mode != ui_output.param_mode
         || state.render.display_options.param_filter_min != ui_output.param_filter_min
         || state.render.display_options.param_filter_max != ui_output.param_filter_max;
@@ -469,7 +517,7 @@ fn render_frame(
     state.render.display_options.show_contours = ui_output.show_contours;
     state.render.display_options.show_hatches = ui_output.show_hatches;
     state.render.display_options.show_arrows = ui_output.show_arrows;
-    state.render.display_options.show_power_markers = ui_output.show_power_markers;
+    state.render.display_options.show_wait_markers = ui_output.show_wait_markers;
     state.render.display_options.param_mode = ui_output.param_mode;
     state.render.display_options.param_filter_min = ui_output.param_filter_min;
     state.render.display_options.param_filter_max = ui_output.param_filter_max;

@@ -2,10 +2,10 @@
 //!
 //! Provides an overlay UI with:
 //! - Top toolbar with visibility toggles, parameter mode, file info, controls
-//! - Right floating vertical layer slider with jump-to input
+//! - Right floating full-height vertical layer slider with jump-to input
 //! - Left floating vertical gradient scale with filtering (when param mode active)
 
-use egui::{Context, Slider, DragValue, RichText, ViewportId, Align2, Color32, Rounding, Stroke, Vec2};
+use egui::{Context, Slider, DragValue, RichText, ViewportId, Align2, Color32, Rounding, Stroke, Vec2, FontData, FontDefinitions, FontFamily};
 use egui_glow::Painter;
 use egui_winit::EventResponse;
 use egui_winit::State as EguiWinitState;
@@ -13,6 +13,10 @@ use std::sync::Arc;
 
 use crate::application::ports::ParameterMode;
 use crate::domain::value_objects::Color;
+use lucide_icons::{Icon as LucideIcon, LUCIDE_FONT_BYTES};
+
+/// Lucide font family name
+const LUCIDE_FONT: &str = "lucide";
 
 /// Height of the top toolbar in logical pixels
 pub const TOOLBAR_HEIGHT: f32 = 52.0;
@@ -35,7 +39,8 @@ pub struct UiOutput {
     pub show_contours: bool,
     pub show_hatches: bool,
     pub show_arrows: bool,
-    pub show_power_markers: bool,
+    /// Show wait time markers
+    pub show_wait_markers: bool,
     /// Parameter visualization mode
     pub param_mode: Option<ParameterMode>,
     /// Parameter filter min/max
@@ -43,6 +48,8 @@ pub struct UiOutput {
     pub param_filter_max: f32,
     /// Whether UI wants to repaint (hover, drag, etc.)
     pub needs_repaint: bool,
+    /// User requested to open a file via load button
+    pub open_file_requested: bool,
 }
 
 /// Vector count info for display
@@ -77,7 +84,8 @@ pub struct UiState {
     pub show_contours: bool,
     pub show_hatches: bool,
     pub show_arrows: bool,
-    pub show_power_markers: bool,
+    /// Show wait time markers
+    pub show_wait_markers: bool,
     /// Vector counts for current layer
     pub vector_counts: VectorCounts,
     /// Parameter visualization mode
@@ -108,7 +116,7 @@ impl Default for UiState {
             show_contours: true,
             show_hatches: true,
             show_arrows: false,
-            show_power_markers: false,
+            show_wait_markers: true,
             vector_counts: VectorCounts::default(),
             param_mode: None,
             param_filter_min: 0.0,
@@ -142,6 +150,31 @@ pub struct UiRenderer {
     pub state: UiState,
     /// Deferred egui output for split run/paint cycle
     pending_output: Option<egui::FullOutput>,
+}
+
+/// Set up fonts including the Lucide icon font
+fn setup_fonts(ctx: &Context) {
+    let mut fonts = FontDefinitions::default();
+    
+    // Add lucide font
+    fonts.font_data.insert(
+        LUCIDE_FONT.to_owned(),
+        FontData::from_static(LUCIDE_FONT_BYTES),
+    );
+    
+    // Add lucide as a fallback for proportional fonts so icons render in text
+    fonts.families
+        .entry(FontFamily::Proportional)
+        .or_default()
+        .push(LUCIDE_FONT.to_owned());
+    
+    // Also register as its own family for explicit use
+    fonts.families.insert(
+        FontFamily::Name(LUCIDE_FONT.into()),
+        vec![LUCIDE_FONT.to_owned()],
+    );
+    
+    ctx.set_fonts(fonts);
 }
 
 /// Apply the light theme to the egui context
@@ -210,6 +243,7 @@ impl UiRenderer {
     /// Create a new UI renderer
     pub fn new(gl: Arc<glow::Context>, window: &winit::window::Window) -> Self {
         let ctx = Context::default();
+        setup_fonts(&ctx);
         apply_light_theme(&ctx);
 
         let winit_state = EguiWinitState::new(
@@ -263,6 +297,9 @@ impl UiRenderer {
         let mut layer_changed = false;
         let mut new_layer = self.state.current_layer;
 
+        // Track if user requested to open a file this frame
+        let mut open_file_requested = false;
+
         // Get raw input from winit state
         let raw_input = self.winit_state.take_egui_input(window);
 
@@ -284,12 +321,29 @@ impl UiRenderer {
                         ui.separator();
                         ui.add_space(8.0);
 
-                        // ── Visibility toggles ──
-                        toolbar_toggle(ui, "🔲", &mut self.state.show_slices, "Toggle Boundaries (B)");
-                        toolbar_toggle(ui, "⭕", &mut self.state.show_contours, "Toggle Contours (C)");
-                        toolbar_toggle(ui, "▤", &mut self.state.show_hatches, "Toggle Hatches (H)");
-                        toolbar_toggle(ui, "➤", &mut self.state.show_arrows, "Toggle Direction Arrows (A)");
-                        toolbar_toggle(ui, "✱", &mut self.state.show_power_markers, "Toggle Power Markers");
+                        // ── Load File button ──
+                        let icon_folder = LucideIcon::FolderOpen.unicode();
+                        let load_btn = egui::Button::new(RichText::new(format!("{} Load", icon_folder)).size(13.0).color(TEXT_PRIMARY))
+                            .fill(Color32::TRANSPARENT)
+                            .rounding(Rounding::same(6.0))
+                            .min_size(Vec2::new(0.0, 30.0));
+                        if ui.add(load_btn).on_hover_text("Load file (Ctrl+O)").clicked() {
+                            open_file_requested = true;
+                        }
+
+                        ui.add_space(8.0);
+                        ui.separator();
+                        ui.add_space(8.0);
+
+                        // ── Visibility toggles (using Lucide icons) ──
+                        let icon_circle = &LucideIcon::Circle.unicode().to_string();
+                        let icon_grid = &LucideIcon::Grid3x3.unicode().to_string();
+                        let icon_arrow = &LucideIcon::MoveRight.unicode().to_string();
+                        let icon_clock = &LucideIcon::Clock.unicode().to_string();
+                        toolbar_toggle(ui, icon_circle, &mut self.state.show_contours, "Toggle Contours (C)");
+                        toolbar_toggle(ui, icon_grid, &mut self.state.show_hatches, "Toggle Hatches (H)");
+                        toolbar_toggle(ui, icon_arrow, &mut self.state.show_arrows, "Toggle Direction Arrows (A)");
+                        toolbar_toggle(ui, icon_clock, &mut self.state.show_wait_markers, "Toggle Wait Time Markers (W)");
 
                         ui.add_space(8.0);
                         ui.separator();
@@ -301,7 +355,6 @@ impl UiRenderer {
                             (None, "None", "No parameter coloring"),
                             (Some(ParameterMode::Power), "Power", "Color by laser power"),
                             (Some(ParameterMode::Speed), "Speed", "Color by scan speed"),
-                            (Some(ParameterMode::WaitTime), "Wait", "Color by wait time"),
                         ];
                         for (mode, label, tip) in &modes {
                             if toolbar_mode_btn(ui, label, self.state.param_mode == *mode, tip) {
@@ -314,7 +367,8 @@ impl UiRenderer {
                         ui.add_space(8.0);
 
                         // ── File Info button ──
-                        let info_btn = egui::Button::new(RichText::new("📋 Info").size(13.0).color(TEXT_PRIMARY))
+                        let icon_info = LucideIcon::FileText.unicode();
+                        let info_btn = egui::Button::new(RichText::new(format!("{} Info", icon_info)).size(13.0).color(TEXT_PRIMARY))
                             .fill(if self.state.show_file_info { TOGGLE_ACTIVE_BG } else { Color32::TRANSPARENT })
                             .rounding(Rounding::same(6.0))
                             .min_size(Vec2::new(0.0, 30.0));
@@ -323,7 +377,8 @@ impl UiRenderer {
                         }
 
                         // ── Controls button ──
-                        let ctrl_btn = egui::Button::new(RichText::new("⌨ Controls").size(13.0).color(TEXT_PRIMARY))
+                        let icon_kbd = LucideIcon::Keyboard.unicode();
+                        let ctrl_btn = egui::Button::new(RichText::new(format!("{} Controls", icon_kbd)).size(13.0).color(TEXT_PRIMARY))
                             .fill(if self.state.show_controls { TOGGLE_ACTIVE_BG } else { Color32::TRANSPARENT })
                             .rounding(Rounding::same(6.0))
                             .min_size(Vec2::new(0.0, 30.0));
@@ -365,20 +420,30 @@ impl UiRenderer {
                 self.state.prev_param_mode = self.state.param_mode;
             }
 
-            // ━━━━━━━━━━━━━━━ RIGHT FLOATING LAYER SLIDER ━━━━━━━━━━━━━━━━
+            // ━━━━━━━━━━━━━━━ RIGHT FLOATING LAYER SLIDER (full height) ━━━━━━━━━━━━━━━━
             if self.state.total_layers > 0 {
                 let screen = ctx.screen_rect();
                 let slider_panel_w = 64.0;
                 let slider_margin = 12.0;
-                let slider_top = TOOLBAR_HEIGHT + 16.0;
-                let slider_bottom_margin = 16.0;
-                let panel_h = (screen.height() - slider_top - slider_bottom_margin).max(220.0);
+                let slider_top = TOOLBAR_HEIGHT + 12.0;
+                let slider_bottom_margin = 12.0;
+                let panel_h = (screen.height() - slider_top - slider_bottom_margin).max(200.0);
+
+                // Fixed heights for controls
+                let btn_h = 24.0;
+                let goto_h = 40.0;
+                let spacing = 8.0;
+                let margin = 16.0; // inner margin total (8+8)
+                let controls_h = btn_h + btn_h + goto_h + spacing * 3.0 + margin;
+                let slider_h = (panel_h - controls_h).max(80.0);
+                let max_layer = self.state.total_layers.saturating_sub(1);
 
                 egui::Area::new(egui::Id::new("layer_slider_area"))
                     .anchor(Align2::RIGHT_TOP, egui::vec2(-slider_margin, slider_top))
                     .order(egui::Order::Foreground)
                     .interactable(true)
                     .movable(false)
+                    .fixed_pos(egui::pos2(screen.right() - slider_margin - slider_panel_w, slider_top))
                     .show(ctx, |ui| {
                         egui::Frame::none()
                             .fill(Color32::from_rgba_premultiplied(255, 255, 255, 230))
@@ -389,67 +454,86 @@ impl UiRenderer {
                                 spread: 0.0,
                                 color: PANEL_SHADOW,
                             })
-                            .inner_margin(egui::Margin::symmetric(8.0, 12.0))
+                            .inner_margin(egui::Margin::symmetric(8.0, 8.0))
                             .show(ui, |ui| {
-                                // Keep this panel strictly fixed-size so no child widget can expand it.
-                                ui.set_min_width(slider_panel_w);
-                                ui.set_max_width(slider_panel_w);
-
-                                let inner_h = panel_h - 24.0;
-                                ui.allocate_ui_with_layout(
-                                    egui::vec2(slider_panel_w, inner_h),
-                                    egui::Layout::top_down(egui::Align::Center),
-                                    |ui| {
-                                        let max_layer = self.state.total_layers.saturating_sub(1);
-                                        let slider_h = (inner_h - 120.0).max(100.0);
-
-                                        let first_btn = egui::Button::new(RichText::new("⏮").size(14.0))
-                                            .min_size(Vec2::new(36.0, 24.0))
-                                            .rounding(Rounding::same(4.0));
-                                        if ui.add(first_btn).on_hover_text("First layer (Home)").clicked() {
-                                            new_layer = 0;
-                                            layer_changed = true;
-                                        }
-
-                                        ui.add_space(4.0);
-
-                                        // Vertical slider (egui puts min at bottom, max at top)
-                                        let mut layer = self.state.current_layer;
-                                        let slider = Slider::new(&mut layer, 0..=max_layer)
-                                            .vertical()
-                                            .show_value(false);
-                                        let slider_response = ui.add_sized(egui::vec2(20.0, slider_h), slider);
-                                        if slider_response.changed() {
-                                            new_layer = layer;
-                                            layer_changed = true;
-                                        }
-
-                                        ui.add_space(4.0);
-
-                                        let last_btn = egui::Button::new(RichText::new("⏭").size(14.0))
-                                            .min_size(Vec2::new(36.0, 24.0))
-                                            .rounding(Rounding::same(4.0));
-                                        if ui.add(last_btn).on_hover_text("Last layer (End)").clicked() {
-                                            new_layer = max_layer;
-                                            layer_changed = true;
-                                        }
-
-                                        ui.add_space(8.0);
-
-                                        // Jump-to input
-                                        ui.label(RichText::new("Go to").size(10.0).color(TEXT_SECONDARY));
-                                        let mut jump_val = (self.state.current_layer + 1) as i64;
-                                        let dv = DragValue::new(&mut jump_val)
-                                            .clamp_range(1..=(self.state.total_layers as i64))
-                                            .speed(1.0);
-                                        if ui.add_sized(egui::vec2(40.0, 20.0), dv).changed() {
-                                            new_layer = (jump_val as usize)
-                                                .saturating_sub(1)
-                                                .min(self.state.total_layers.saturating_sub(1));
-                                            layer_changed = true;
-                                        }
-                                    },
+                                ui.spacing_mut().item_spacing = egui::vec2(0.0, 0.0);
+                                
+                                // Allocate fixed size for entire content
+                                let content_w = slider_panel_w - margin;
+                                let content_h = panel_h - margin;
+                                let (content_rect, _) = ui.allocate_exact_size(
+                                    egui::vec2(content_w, content_h),
+                                    egui::Sense::hover(),
                                 );
+                                
+                                // Place widgets manually within the allocated rect
+                                let center_x = content_rect.center().x;
+                                
+                                // First button
+                                let first_btn_rect = egui::Rect::from_center_size(
+                                    egui::pos2(center_x, content_rect.top() + btn_h / 2.0),
+                                    egui::vec2(36.0, btn_h),
+                                );
+                                let first_btn = egui::Button::new(RichText::new("⏮").size(14.0))
+                                    .rounding(Rounding::same(4.0));
+                                if ui.put(first_btn_rect, first_btn).on_hover_text("First layer (Home)").clicked() {
+                                    new_layer = 0;
+                                    layer_changed = true;
+                                }
+
+                                // Slider
+                                let slider_top_y = content_rect.top() + btn_h + spacing;
+                                let slider_rect = egui::Rect::from_center_size(
+                                    egui::pos2(center_x, slider_top_y + slider_h / 2.0),
+                                    egui::vec2(20.0, slider_h),
+                                );
+                                let mut layer = self.state.current_layer;
+                                let slider = Slider::new(&mut layer, 0..=max_layer)
+                                    .vertical()
+                                    .show_value(false);
+                                if ui.put(slider_rect, slider).changed() {
+                                    new_layer = layer;
+                                    layer_changed = true;
+                                }
+
+                                // Last button
+                                let last_btn_y = slider_top_y + slider_h + spacing + btn_h / 2.0;
+                                let last_btn_rect = egui::Rect::from_center_size(
+                                    egui::pos2(center_x, last_btn_y),
+                                    egui::vec2(36.0, btn_h),
+                                );
+                                let last_btn = egui::Button::new(RichText::new("⏭").size(14.0))
+                                    .rounding(Rounding::same(4.0));
+                                if ui.put(last_btn_rect, last_btn).on_hover_text("Last layer (End)").clicked() {
+                                    new_layer = max_layer;
+                                    layer_changed = true;
+                                }
+
+                                // Go to label
+                                let goto_label_y = last_btn_y + btn_h / 2.0 + spacing + 8.0;
+                                ui.painter().text(
+                                    egui::pos2(center_x, goto_label_y),
+                                    egui::Align2::CENTER_CENTER,
+                                    "Go to",
+                                    egui::FontId::proportional(10.0),
+                                    TEXT_SECONDARY,
+                                );
+
+                                // Jump input
+                                let jump_rect = egui::Rect::from_center_size(
+                                    egui::pos2(center_x, goto_label_y + 18.0),
+                                    egui::vec2(40.0, 20.0),
+                                );
+                                let mut jump_val = (self.state.current_layer + 1) as i64;
+                                let dv = DragValue::new(&mut jump_val)
+                                    .clamp_range(1..=(self.state.total_layers as i64))
+                                    .speed(1.0);
+                                if ui.put(jump_rect, dv).changed() {
+                                    new_layer = (jump_val as usize)
+                                        .saturating_sub(1)
+                                        .min(self.state.total_layers.saturating_sub(1));
+                                    layer_changed = true;
+                                }
                             });
                     });
             }
@@ -457,16 +541,25 @@ impl UiRenderer {
             // ━━━━━━━━━━━━━━━ LEFT FLOATING GRADIENT SCALE ━━━━━━━━━━━━━━━━
             if self.state.param_mode.is_some() {
                 let screen = ctx.screen_rect();
-                let grad_top = TOOLBAR_HEIGHT + 16.0;
+                let grad_top = TOOLBAR_HEIGHT + 12.0;
                 let grad_margin = 12.0;
-                let slider_panel_w = 64.0;
                 let grad_panel_w = 92.0;
-                // Keep gradient panel just left of the right slider panel.
-                let right_offset = -(grad_margin + slider_panel_w + 10.0 + grad_panel_w);
-                let grad_panel_h = (screen.height() - grad_top - 16.0).max(240.0);
+                let grad_bottom_margin = 12.0;
+                let grad_panel_h = (screen.height() - grad_top - grad_bottom_margin).max(200.0);
+                
+                let bar_w = 16.0;
+                let margin_h = 16.0; // inner margin (8+8)
+                let margin_w = 20.0; // inner margin (10+10)
+                // Fixed control heights
+                let label_h = 16.0;
+                let val_label_h = 14.0;
+                let filter_section_h = 100.0; // Filter label + Min/Max labels + inputs + reset button
+                let spacing = 4.0;
+                let controls_h = label_h + val_label_h + val_label_h + filter_section_h + spacing * 4.0 + margin_h;
+                let bar_h = (grad_panel_h - controls_h).max(50.0);
 
                 egui::Area::new(egui::Id::new("gradient_scale_area"))
-                    .anchor(Align2::RIGHT_TOP, egui::vec2(right_offset, grad_top))
+                    .fixed_pos(egui::pos2(grad_margin, grad_top))
                     .order(egui::Order::Foreground)
                     .interactable(true)
                     .movable(false)
@@ -480,123 +573,192 @@ impl UiRenderer {
                                 spread: 0.0,
                                 color: PANEL_SHADOW,
                             })
-                            .inner_margin(egui::Margin::symmetric(10.0, 12.0))
+                            .inner_margin(egui::Margin::symmetric(10.0, 8.0))
                             .show(ui, |ui| {
-                                // Hard bounds: no expansion beyond this panel size.
-                                ui.set_min_width(grad_panel_w);
-                                ui.set_max_width(grad_panel_w);
-
-                                let inner_h = grad_panel_h - 24.0;
-                                ui.allocate_ui_with_layout(
-                                    egui::vec2(grad_panel_w, inner_h),
-                                    egui::Layout::top_down(egui::Align::Center),
-                                    |ui| {
-                                        let bar_w = 16.0;
-                                        let bar_h = (inner_h - 160.0).max(120.0);
-
-                                        // Mode label
-                                        let mode_label = match self.state.param_mode {
-                                            Some(ParameterMode::Power) => "Power",
-                                            Some(ParameterMode::Speed) => "Speed",
-                                            Some(ParameterMode::WaitTime) => "Wait Time",
-                                            None => "",
-                                        };
-                                        ui.label(RichText::new(mode_label).size(11.0).strong().color(TEXT_PRIMARY));
-                                        ui.add_space(4.0);
-
-                                        // Max value label (top of scale)
-                                        ui.label(
-                                            RichText::new(format!("{:.1}", self.state.param_filter_max))
-                                                .size(10.0)
-                                                .color(TEXT_SECONDARY),
-                                        );
-                                        ui.add_space(2.0);
-
-                                        // Vertical gradient bar
-                                        let (rect, _) = ui.allocate_exact_size(
-                                            egui::vec2(bar_w, bar_h),
-                                            egui::Sense::hover(),
-                                        );
-                                        let n = 64;
-                                        let seg_h = rect.height() / n as f32;
-                                        for i in 0..n {
-                                            // t=1 at top (max/hot), t=0 at bottom (min/cold)
-                                            let t = 1.0 - (i as f32 / (n - 1) as f32);
-                                            let c = Color::heat_gradient(t);
-                                            let y0 = rect.top() + i as f32 * seg_h;
-                                            let seg = egui::Rect::from_min_max(
-                                                egui::pos2(rect.left(), y0),
-                                                egui::pos2(rect.right(), y0 + seg_h + 0.5),
-                                            );
-                                            ui.painter().rect_filled(
-                                                seg,
-                                                0.0,
-                                                Color32::from_rgb(
-                                                    (c.r * 255.0) as u8,
-                                                    (c.g * 255.0) as u8,
-                                                    (c.b * 255.0) as u8,
-                                                ),
-                                            );
-                                        }
-                                        ui.painter().rect_stroke(
-                                            rect,
-                                            Rounding::same(2.0),
-                                            Stroke::new(1.0, Color32::from_rgb(180, 180, 180)),
-                                        );
-
-                                        ui.add_space(2.0);
-                                        ui.label(
-                                            RichText::new(format!("{:.1}", self.state.param_filter_min))
-                                                .size(10.0)
-                                                .color(TEXT_SECONDARY),
-                                        );
-
-                                        ui.add_space(8.0);
-                                        ui.label(RichText::new("Filter").size(10.0).strong().color(TEXT_PRIMARY));
-                                        ui.add_space(2.0);
-
-                                        let data_range = match self.state.param_mode {
-                                            Some(ParameterMode::Power) => self.state.param_ranges.power,
-                                            Some(ParameterMode::Speed) => self.state.param_ranges.speed,
-                                            Some(ParameterMode::WaitTime) => self.state.param_ranges.wait_time,
-                                            None => None,
-                                        };
-                                        let (lo, hi) = data_range.unwrap_or((0.0, 1.0));
-                                        let speed = (hi - lo).abs() * 0.01;
-
-                                        ui.label(RichText::new("Min").size(10.0).color(TEXT_SECONDARY));
-                                        ui.add_sized(
-                                            egui::vec2(52.0, 18.0),
-                                            DragValue::new(&mut self.state.param_filter_min)
-                                                .speed(speed.max(0.1))
-                                                .clamp_range(lo..=self.state.param_filter_max),
-                                        );
-
-                                        ui.label(RichText::new("Max").size(10.0).color(TEXT_SECONDARY));
-                                        ui.add_sized(
-                                            egui::vec2(52.0, 18.0),
-                                            DragValue::new(&mut self.state.param_filter_max)
-                                                .speed(speed.max(0.1))
-                                                .clamp_range(self.state.param_filter_min..=hi),
-                                        );
-
-                                        ui.add_space(2.0);
-                                        let reset_btn = egui::Button::new(RichText::new("Reset").size(10.0))
-                                            .rounding(Rounding::same(4.0))
-                                            .min_size(Vec2::new(52.0, 20.0));
-                                        if ui.add(reset_btn).clicked() {
-                                            self.state.param_filter_min = lo;
-                                            self.state.param_filter_max = hi;
-                                        }
-                                    },
+                                ui.spacing_mut().item_spacing = egui::vec2(0.0, 0.0);
+                                
+                                // Allocate exact content size
+                                let content_w = grad_panel_w - margin_w;
+                                let content_h = grad_panel_h - margin_h;
+                                let (content_rect, _) = ui.allocate_exact_size(
+                                    egui::vec2(content_w, content_h),
+                                    egui::Sense::hover(),
                                 );
+                                
+                                let center_x = content_rect.center().x;
+                                let mut y = content_rect.top();
+                                
+                                // Mode label with units
+                                let mode_label = match self.state.param_mode {
+                                    Some(ParameterMode::Power) => "Power (W)",
+                                    Some(ParameterMode::Speed) => "Speed (mm/s)",
+                                    Some(ParameterMode::WaitTime) => "Wait (µs)",
+                                    None => "",
+                                };
+                                ui.painter().text(
+                                    egui::pos2(center_x, y + label_h / 2.0),
+                                    egui::Align2::CENTER_CENTER,
+                                    mode_label,
+                                    egui::FontId::proportional(11.0),
+                                    TEXT_PRIMARY,
+                                );
+                                y += label_h + spacing;
+
+                                // Max value label
+                                ui.painter().text(
+                                    egui::pos2(center_x, y + val_label_h / 2.0),
+                                    egui::Align2::CENTER_CENTER,
+                                    format!("{:.1}", self.state.param_filter_max),
+                                    egui::FontId::proportional(10.0),
+                                    TEXT_SECONDARY,
+                                );
+                                y += val_label_h + spacing;
+
+                                // Gradient bar
+                                let bar_rect = egui::Rect::from_min_size(
+                                    egui::pos2(center_x - bar_w / 2.0, y),
+                                    egui::vec2(bar_w, bar_h),
+                                );
+                                let n = 64;
+                                let seg_h = bar_rect.height() / n as f32;
+                                for i in 0..n {
+                                    let t = 1.0 - (i as f32 / (n - 1) as f32);
+                                    let c = Color::viridis_gradient(t);
+                                    let y0 = bar_rect.top() + i as f32 * seg_h;
+                                    let seg = egui::Rect::from_min_max(
+                                        egui::pos2(bar_rect.left(), y0),
+                                        egui::pos2(bar_rect.right(), y0 + seg_h + 0.5),
+                                    );
+                                    ui.painter().rect_filled(
+                                        seg,
+                                        0.0,
+                                        Color32::from_rgb(
+                                            (c.r * 255.0) as u8,
+                                            (c.g * 255.0) as u8,
+                                            (c.b * 255.0) as u8,
+                                        ),
+                                    );
+                                }
+                                ui.painter().rect_stroke(
+                                    bar_rect,
+                                    Rounding::same(2.0),
+                                    Stroke::new(1.0, Color32::from_rgb(180, 180, 180)),
+                                );
+
+                                // Tick marks
+                                let num_ticks = 5;
+                                let val_min = self.state.param_filter_min;
+                                let val_max = self.state.param_filter_max;
+                                for tick_i in 0..num_ticks {
+                                    let frac = tick_i as f32 / (num_ticks - 1) as f32;
+                                    let tick_y = bar_rect.bottom() - frac * bar_rect.height();
+                                    ui.painter().line_segment(
+                                        [egui::pos2(bar_rect.right(), tick_y), egui::pos2(bar_rect.right() + 4.0, tick_y)],
+                                        Stroke::new(1.0, Color32::from_rgb(100, 100, 100)),
+                                    );
+                                    if tick_i > 0 && tick_i < num_ticks - 1 {
+                                        let val = val_min + frac * (val_max - val_min);
+                                        ui.painter().text(
+                                            egui::pos2(bar_rect.right() + 6.0, tick_y),
+                                            egui::Align2::LEFT_CENTER,
+                                            format!("{:.0}", val),
+                                            egui::FontId::proportional(8.0),
+                                            Color32::from_rgb(100, 100, 100),
+                                        );
+                                    }
+                                }
+                                y += bar_h + spacing;
+
+                                // Min value label
+                                ui.painter().text(
+                                    egui::pos2(center_x, y + val_label_h / 2.0),
+                                    egui::Align2::CENTER_CENTER,
+                                    format!("{:.1}", self.state.param_filter_min),
+                                    egui::FontId::proportional(10.0),
+                                    TEXT_SECONDARY,
+                                );
+                                y += val_label_h + spacing;
+
+                                // Filter section
+                                ui.painter().text(
+                                    egui::pos2(center_x, y + 8.0),
+                                    egui::Align2::CENTER_CENTER,
+                                    "Filter",
+                                    egui::FontId::proportional(10.0),
+                                    TEXT_PRIMARY,
+                                );
+                                y += 18.0;
+
+                                let data_range = match self.state.param_mode {
+                                    Some(ParameterMode::Power) => self.state.param_ranges.power,
+                                    Some(ParameterMode::Speed) => self.state.param_ranges.speed,
+                                    Some(ParameterMode::WaitTime) => self.state.param_ranges.wait_time,
+                                    None => None,
+                                };
+                                let (lo, hi) = data_range.unwrap_or((0.0, 1.0));
+                                let speed = (hi - lo).abs() * 0.01;
+
+                                // Min label + input
+                                ui.painter().text(
+                                    egui::pos2(center_x, y + 6.0),
+                                    egui::Align2::CENTER_CENTER,
+                                    "Min",
+                                    egui::FontId::proportional(10.0),
+                                    TEXT_SECONDARY,
+                                );
+                                y += 14.0;
+                                let min_rect = egui::Rect::from_center_size(
+                                    egui::pos2(center_x, y + 9.0),
+                                    egui::vec2(52.0, 18.0),
+                                );
+                                ui.put(
+                                    min_rect,
+                                    DragValue::new(&mut self.state.param_filter_min)
+                                        .speed(speed.max(0.1))
+                                        .clamp_range(lo..=self.state.param_filter_max),
+                                );
+                                y += 20.0;
+
+                                // Max label + input
+                                ui.painter().text(
+                                    egui::pos2(center_x, y + 6.0),
+                                    egui::Align2::CENTER_CENTER,
+                                    "Max",
+                                    egui::FontId::proportional(10.0),
+                                    TEXT_SECONDARY,
+                                );
+                                y += 14.0;
+                                let max_rect = egui::Rect::from_center_size(
+                                    egui::pos2(center_x, y + 9.0),
+                                    egui::vec2(52.0, 18.0),
+                                );
+                                ui.put(
+                                    max_rect,
+                                    DragValue::new(&mut self.state.param_filter_max)
+                                        .speed(speed.max(0.1))
+                                        .clamp_range(self.state.param_filter_min..=hi),
+                                );
+                                y += 22.0;
+
+                                // Reset button
+                                let reset_rect = egui::Rect::from_center_size(
+                                    egui::pos2(center_x, y + 10.0),
+                                    egui::vec2(52.0, 20.0),
+                                );
+                                let reset_btn = egui::Button::new(RichText::new("Reset").size(10.0))
+                                    .rounding(Rounding::same(4.0));
+                                if ui.put(reset_rect, reset_btn).clicked() {
+                                    self.state.param_filter_min = lo;
+                                    self.state.param_filter_max = hi;
+                                }
                             });
                     });
             }
 
             // ━━━━━━━━━━━━━━━━━━ FILE INFO POPUP ━━━━━━━━━━━━━━━━━━━━━━
             if self.state.show_file_info {
-                egui::Window::new(RichText::new("📋 File Info").size(14.0).color(TEXT_PRIMARY))
+                let file_icon = LucideIcon::FileText.unicode();
+                egui::Window::new(RichText::new(format!("{} File Info", file_icon)).size(14.0).color(TEXT_PRIMARY))
                     .collapsible(false)
                     .resizable(false)
                     .default_width(220.0)
@@ -711,11 +873,12 @@ impl UiRenderer {
             show_contours: self.state.show_contours,
             show_hatches: self.state.show_hatches,
             show_arrows: self.state.show_arrows,
-            show_power_markers: self.state.show_power_markers,
+            show_wait_markers: self.state.show_wait_markers,
             param_mode: self.state.param_mode,
             param_filter_min: self.state.param_filter_min,
             param_filter_max: self.state.param_filter_max,
             needs_repaint,
+            open_file_requested,
         }
     }
 

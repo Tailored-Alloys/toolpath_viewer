@@ -121,7 +121,9 @@ pub struct GlRenderer {
     boundary_batch: LineBatch,
     hatch_batch: LineBatch,
     arrow_batch: LineBatch,
-    marker_batch: LineBatch,
+    wait_marker_batch: LineBatch,
+    /// Whether to render wait markers
+    show_wait_markers: bool,
     color_scheme: ColorScheme,
     initialized: bool,
     /// Track last hatch count to reduce log spam
@@ -143,7 +145,8 @@ impl GlRenderer {
             boundary_batch: LineBatch::new(),
             hatch_batch: LineBatch::new(),
             arrow_batch: LineBatch::new(),
-            marker_batch: LineBatch::new(),
+            wait_marker_batch: LineBatch::new(),
+            show_wait_markers: true,
             color_scheme: ColorScheme::default(),
             initialized: false,
             last_hatch_count: usize::MAX,
@@ -199,10 +202,10 @@ impl GlRenderer {
         self.boundary_batch.clear();
         self.hatch_batch.clear();
         self.arrow_batch.clear();
-        self.marker_batch.clear();
+        self.wait_marker_batch.clear();
+        self.show_wait_markers = options.show_wait_markers;
 
         let dim_color = Color::rgb(0.3, 0.3, 0.3);
-        let star_color = Color::rgb(1.0, 0.4, 0.0);  // orange stars
 
         let marker_size = compute_marker_size(layer);
         let arrow_arm = marker_size * 0.8;
@@ -229,7 +232,7 @@ impl GlRenderer {
                         } else {
                             0.5
                         };
-                        Color::heat_gradient(t)
+                        Color::viridis_gradient(t)
                     }
                     None => dim_color, // no param data, show dimmed
                 }
@@ -312,30 +315,29 @@ impl GlRenderer {
                 }
             }
 
-            // --- Power star markers ---
-            if options.show_power_markers && vector.parameters.power.is_some() && vector.points.len() >= 2 {
-                match vector.vector_type {
-                    VectorType::Hatch => {
-                        // Star at midpoint
-                        let p0 = &vector.points[0];
-                        let p1 = &vector.points[1];
-                        let mid = Point2D::new(
-                            (p0.x + p1.x) * 0.5,
-                            (p0.y + p1.y) * 0.5,
-                        );
-                        add_star_marker(&mut self.marker_batch, &mid, star_radius, &star_color);
-                    }
-                    _ => {
-                        // Stars at regular intervals along polylines
-                        let mut accum = arrow_spacing * 0.5;
-                        for pair in vector.points.windows(2) {
-                            let dx = pair[1].x - pair[0].x;
-                            let dy = pair[1].y - pair[0].y;
-                            let seg_len = (dx * dx + dy * dy).sqrt();
-                            accum += seg_len;
-                            if accum >= arrow_spacing {
-                                accum -= arrow_spacing;
-                                add_star_marker(&mut self.marker_batch, &pair[1], star_radius, &star_color);
+            // --- Wait time markers (at END of vectors with wait_time) ---
+            // Color based on wait time value using heat gradient
+            if let Some(wait_val) = vector.parameters.wait_time {
+                if vector.points.len() >= 2 {
+                    // Compute normalized value for viridis gradient
+                    let range = options.wait_time_max - options.wait_time_min;
+                    let t = if range > 0.0 {
+                        (wait_val - options.wait_time_min) / range
+                    } else {
+                        0.5
+                    };
+                    let wait_color = Color::viridis_gradient(t);
+                    
+                    match vector.vector_type {
+                        VectorType::Hatch => {
+                            // Star at endpoint (p1) where the laser waits
+                            let p1 = &vector.points[1];
+                            add_star_marker(&mut self.wait_marker_batch, p1, star_radius, &wait_color);
+                        }
+                        _ => {
+                            // For polylines, star at the last point
+                            if let Some(last) = vector.points.last() {
+                                add_star_marker(&mut self.wait_marker_batch, last, star_radius, &wait_color);
                             }
                         }
                     }
@@ -347,7 +349,7 @@ impl GlRenderer {
         self.boundary_batch.set_line_width(options.line_width * 1.5);
         self.hatch_batch.set_line_width(options.line_width * 0.8);
         self.arrow_batch.set_line_width(options.line_width * 0.8);
-        self.marker_batch.set_line_width(options.line_width * 1.5);
+        self.wait_marker_batch.set_line_width(options.line_width * 1.5);
 
         let hatch_count = self.hatch_batch.vertex_count() / 2;
         if hatch_count != self.last_hatch_count {
@@ -406,7 +408,9 @@ impl GlRenderer {
         self.contour_batch.render();
         self.boundary_batch.render();
         self.arrow_batch.render();
-        self.marker_batch.render();
+        if self.show_wait_markers {
+            self.wait_marker_batch.render();
+        }
 
         Ok(())
     }

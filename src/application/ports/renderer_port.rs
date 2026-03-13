@@ -38,14 +38,18 @@ pub struct DisplayOptions {
     pub show_hatches: bool,
     /// Show direction arrows
     pub show_arrows: bool,
-    /// Show power markers (asterisks on vectors with power data)
-    pub show_power_markers: bool,
     /// Parameter visualization mode
     pub param_mode: Option<ParameterMode>,
     /// Parameter filter range minimum
     pub param_filter_min: f32,
     /// Parameter filter range maximum
     pub param_filter_max: f32,
+    /// Wait time range minimum (for marker coloring)
+    pub wait_time_min: f32,
+    /// Wait time range maximum (for marker coloring)
+    pub wait_time_max: f32,
+    /// Show wait time markers (asterisks)
+    pub show_wait_markers: bool,
     /// Background color
     pub background_color: Color,
     /// Line width multiplier
@@ -60,10 +64,12 @@ impl Default for DisplayOptions {
             show_depth_contours: true,
             show_hatches: true,
             show_arrows: false,
-            show_power_markers: false,
             param_mode: None,
             param_filter_min: 0.0,
             param_filter_max: f32::MAX,
+            wait_time_min: 0.0,
+            wait_time_max: f32::MAX,
+            show_wait_markers: true,
             background_color: Color::from_hex("#FAFAFA").unwrap_or(Color::WHITE),
             line_width: 1.5,
         }

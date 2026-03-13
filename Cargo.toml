@@ -27,6 +27,7 @@ nalgebra-glm = "0.18"
 flate2 = "1.0"  # For gzip/deflate decompression
 zip = "2.2"     # For ZIP-compressed ILT files
 byteorder = "1.5"
+rfd = "0.15"    # Native file dialogs
 
 # Error handling
 thiserror = "1.0"
@@ -39,6 +40,7 @@ env_logger = "0.10"
 # Serialization (for config)
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+lucide-icons = "0.575.0"
 
 [dev-dependencies]
 criterion = "0.5"  # Benchmarking
