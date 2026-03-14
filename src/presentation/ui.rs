@@ -11,7 +11,7 @@ use egui_winit::EventResponse;
 use egui_winit::State as EguiWinitState;
 use std::sync::Arc;
 
-use crate::application::ports::ParameterMode;
+use crate::application::ports::{GridUnit, ParameterMode};
 use crate::domain::value_objects::Color;
 use lucide_icons::{Icon as LucideIcon, LUCIDE_FONT_BYTES};
 
@@ -20,6 +20,88 @@ const LUCIDE_FONT: &str = "lucide";
 
 /// Height of the top toolbar in logical pixels
 pub const TOOLBAR_HEIGHT: f32 = 52.0;
+
+// ── Tool Mode types ───────────────────────────────────────────────────────
+
+/// Active tool mode
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToolMode {
+    /// Default mode — pan/zoom with existing controls
+    None,
+    /// Shift+drag rectangle zoom-to-fit
+    ZoomSelect,
+    /// Click-to-click distance measurement
+    Ruler,
+}
+
+impl Default for ToolMode {
+    fn default() -> Self {
+        ToolMode::None
+    }
+}
+
+/// A persistent ruler measurement drawn on the viewport
+#[derive(Debug, Clone)]
+pub struct RulerMeasurement {
+    /// Start point in world coordinates
+    pub start: crate::domain::value_objects::Point2D,
+    /// End point in world coordinates
+    pub end: crate::domain::value_objects::Point2D,
+    /// Measured distance in mm
+    pub distance_mm: f32,
+}
+
+/// Tool state managed by the UI and consumed by the app
+#[derive(Debug, Clone)]
+pub struct ToolState {
+    /// Currently active tool mode
+    pub active_mode: ToolMode,
+    /// Zoom selection rectangle start (screen coords, viewport-relative)
+    pub zoom_rect_start: Option<crate::domain::value_objects::Point2D>,
+    /// Zoom selection rectangle end (screen coords, viewport-relative)
+    pub zoom_rect_end: Option<crate::domain::value_objects::Point2D>,
+    /// Ruler measurement start (world coords)
+    pub ruler_start: Option<crate::domain::value_objects::Point2D>,
+    /// Ruler measurement end (world coords, live preview while placing)
+    pub ruler_end: Option<crate::domain::value_objects::Point2D>,
+    /// Persistent ruler measurements
+    pub ruler_measurements: Vec<RulerMeasurement>,
+    /// Show background grid
+    pub show_grid: bool,
+    /// Grid display unit
+    pub grid_unit: GridUnit,
+    /// Show scale bar
+    pub show_scale_bar: bool,
+    /// Snapshot requested this frame
+    pub snapshot_requested: bool,
+    /// Snapshot format requested
+    pub snapshot_format: SnapshotFormat,
+}
+
+impl Default for ToolState {
+    fn default() -> Self {
+        Self {
+            active_mode: ToolMode::None,
+            zoom_rect_start: None,
+            zoom_rect_end: None,
+            ruler_start: None,
+            ruler_end: None,
+            ruler_measurements: Vec::new(),
+            show_grid: false,
+            grid_unit: GridUnit::Millimeters,
+            show_scale_bar: true,
+            snapshot_requested: false,
+            snapshot_format: SnapshotFormat::Png,
+        }
+    }
+}
+
+/// Snapshot export format
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SnapshotFormat {
+    Png,
+    Svg,
+}
 
 /// Global parameter ranges computed from the entire file
 #[derive(Debug, Clone, Default)]
@@ -50,6 +132,14 @@ pub struct UiOutput {
     pub needs_repaint: bool,
     /// User requested to open a file via load button
     pub open_file_requested: bool,
+    /// Tool state output
+    pub tool_state: ToolState,
+    /// Zoom in button clicked
+    pub zoom_in_requested: bool,
+    /// Zoom out button clicked
+    pub zoom_out_requested: bool,
+    /// Fit view button clicked
+    pub fit_view_requested: bool,
 }
 
 /// Vector count info for display
@@ -104,6 +194,12 @@ pub struct UiState {
     pub show_controls: bool,
     /// Layer jump input value (text field for direct entry)
     pub layer_jump_value: String,
+    /// Tool state
+    pub tool_state: ToolState,
+    /// Cached zoom level for scale bar (updated from app each frame)
+    pub tool_state_zoom: f32,
+    /// Cached view transform for coordinate conversion (viewport_w, viewport_h, ViewState)
+    pub tool_state_view_transform: Option<(f32, f32, crate::application::ports::ViewState)>,
 }
 
 impl Default for UiState {
@@ -126,6 +222,9 @@ impl Default for UiState {
             show_file_info: false,
             show_controls: false,
             layer_jump_value: String::new(),
+            tool_state: ToolState::default(),
+            tool_state_zoom: 1.0,
+            tool_state_view_transform: None,
         }
     }
 }
@@ -272,6 +371,12 @@ impl UiRenderer {
         self.state.current_z = z;
     }
 
+    /// Update the cached view transform so overlays (ruler, grid labels, scale bar) can convert coords
+    pub fn update_view_transform(&mut self, view: &crate::application::ports::ViewState, viewport_width: f32, viewport_height: f32) {
+        self.state.tool_state_zoom = view.zoom;
+        self.state.tool_state_view_transform = Some((viewport_width, viewport_height, view.clone()));
+    }
+
     /// Handle window event, forwards to egui
     pub fn handle_event(
         &mut self,
@@ -299,6 +404,12 @@ impl UiRenderer {
 
         // Track if user requested to open a file this frame
         let mut open_file_requested = false;
+
+        // Track tool actions requested this frame
+        let mut zoom_in_requested = false;
+        let mut zoom_out_requested = false;
+        let mut fit_view_requested = false;
+        let mut snapshot_requested = false;
 
         // Get raw input from winit state
         let raw_input = self.winit_state.take_egui_input(window);
@@ -830,11 +941,14 @@ impl UiRenderer {
                             ("Scroll Wheel", "Zoom in / out"),
                             ("Middle Drag", "Pan view"),
                             ("Ctrl + Left Drag", "Pan view"),
+                            ("Shift + Left Drag", "Zoom to selection"),
                             ("R", "Reset view (fit to content)"),
                             ("B", "Toggle boundaries"),
                             ("C", "Toggle contours"),
                             ("H", "Toggle hatches"),
                             ("A", "Toggle direction arrows"),
+                            ("G", "Toggle background grid"),
+                            ("Ctrl + P", "Take snapshot"),
                         ];
                         egui::Grid::new("controls_grid")
                             .num_columns(2)
@@ -847,6 +961,343 @@ impl UiRenderer {
                                 }
                             });
                     });
+            }
+
+            // ━━━━━━━━━━━━━━━━━━ FLOATING TOOL PANEL (top-right, horizontal) ━━━━━━━━━━━━━━━━━━
+            {
+                let screen = ctx.screen_rect();
+                // Position: top-right, left of the layer slider (64 + 12 margin + 8 gap)
+                let tool_panel_right_offset = 64.0 + 12.0 + 8.0;
+                let tool_panel_top = TOOLBAR_HEIGHT + 8.0;
+
+                egui::Area::new(egui::Id::new("tool_panel_area"))
+                    .fixed_pos(egui::pos2(screen.right() - tool_panel_right_offset, tool_panel_top))
+                    .pivot(Align2::RIGHT_TOP)
+                    .order(egui::Order::Foreground)
+                    .interactable(true)
+                    .movable(false)
+                    .show(ctx, |ui| {
+                        egui::Frame::none()
+                            .fill(Color32::from_rgba_premultiplied(255, 255, 255, 230))
+                            .rounding(Rounding::same(8.0))
+                            .shadow(egui::epaint::Shadow {
+                                offset: egui::vec2(0.0, 1.0),
+                                blur: 6.0,
+                                spread: 0.0,
+                                color: PANEL_SHADOW,
+                            })
+                            .inner_margin(egui::Margin::symmetric(4.0, 4.0))
+                            .show(ui, |ui| {
+                                ui.horizontal(|ui| {
+                                    ui.spacing_mut().item_spacing = egui::vec2(2.0, 0.0);
+                                    let btn_size = Vec2::new(28.0, 28.0);
+                                    let icon_sz = 14.0;
+
+                                    // Helper macro-like closure for tool buttons
+                                    let mut tool_btn = |ui: &mut egui::Ui, icon: &str, tooltip: &str, active: bool| -> bool {
+                                        let fill = if active { TOGGLE_ACTIVE_BG } else { Color32::TRANSPARENT };
+                                        let tc = if active { ACCENT } else { TEXT_PRIMARY };
+                                        let btn = egui::Button::new(RichText::new(icon).size(icon_sz).color(tc))
+                                            .fill(fill)
+                                            .rounding(Rounding::same(4.0))
+                                            .min_size(btn_size);
+                                        ui.add(btn).on_hover_text(tooltip).clicked()
+                                    };
+
+                                    // ── Zoom In ──
+                                    if tool_btn(ui, &LucideIcon::ZoomIn.unicode().to_string(), "Zoom In", false) {
+                                        zoom_in_requested = true;
+                                    }
+                                    // ── Zoom Out ──
+                                    if tool_btn(ui, &LucideIcon::ZoomOut.unicode().to_string(), "Zoom Out", false) {
+                                        zoom_out_requested = true;
+                                    }
+                                    // ── Fit View ──
+                                    if tool_btn(ui, &LucideIcon::Maximize.unicode().to_string(), "Fit View (R)", false) {
+                                        fit_view_requested = true;
+                                    }
+                                    // ── Zoom Selection ──
+                                    let is_zoom_select = self.state.tool_state.active_mode == ToolMode::ZoomSelect;
+                                    if tool_btn(ui, &LucideIcon::Scan.unicode().to_string(), "Zoom Selection (Shift+Drag)", is_zoom_select) {
+                                        self.state.tool_state.active_mode = if is_zoom_select { ToolMode::None } else { ToolMode::ZoomSelect };
+                                    }
+
+                                    // ── Separator ──
+                                    ui.add(egui::Separator::default().vertical().spacing(4.0));
+
+                                    // ── Ruler ──
+                                    let is_ruler = self.state.tool_state.active_mode == ToolMode::Ruler;
+                                    if tool_btn(ui, &LucideIcon::Ruler.unicode().to_string(), "Ruler Tool", is_ruler) {
+                                        if is_ruler {
+                                            self.state.tool_state.active_mode = ToolMode::None;
+                                            self.state.tool_state.ruler_start = None;
+                                            self.state.tool_state.ruler_end = None;
+                                        } else {
+                                            self.state.tool_state.active_mode = ToolMode::Ruler;
+                                        }
+                                    }
+                                    // ── Clear measurements ──
+                                    if !self.state.tool_state.ruler_measurements.is_empty() {
+                                        let btn = egui::Button::new(RichText::new(&LucideIcon::X.unicode().to_string()).size(11.0).color(TEXT_SECONDARY))
+                                            .fill(Color32::TRANSPARENT)
+                                            .rounding(Rounding::same(4.0))
+                                            .min_size(Vec2::new(20.0, 28.0));
+                                        if ui.add(btn).on_hover_text("Clear measurements").clicked() {
+                                            self.state.tool_state.ruler_measurements.clear();
+                                        }
+                                    }
+                                    // ── Scale bar toggle ──
+                                    if tool_btn(ui, &LucideIcon::RulerDimensionLine.unicode().to_string(), "Scale Bar", self.state.tool_state.show_scale_bar) {
+                                        self.state.tool_state.show_scale_bar = !self.state.tool_state.show_scale_bar;
+                                    }
+
+                                    // ── Separator ──
+                                    ui.add(egui::Separator::default().vertical().spacing(4.0));
+
+                                    // ── Grid ──
+                                    if tool_btn(ui, &LucideIcon::Grid3x3.unicode().to_string(), "Grid (G)", self.state.tool_state.show_grid) {
+                                        self.state.tool_state.show_grid = !self.state.tool_state.show_grid;
+                                    }
+                                    // ── Grid unit selector (compact, inline) ──
+                                    if self.state.tool_state.show_grid {
+                                        let units = [GridUnit::Millimeters, GridUnit::Micrometers, GridUnit::Inches];
+                                        for unit in &units {
+                                            let is_sel = self.state.tool_state.grid_unit == *unit;
+                                            let fill = if is_sel { ACCENT } else { TOGGLE_INACTIVE_BG };
+                                            let tc = if is_sel { Color32::WHITE } else { TEXT_PRIMARY };
+                                            let btn = egui::Button::new(RichText::new(unit.label()).size(9.0).color(tc))
+                                                .fill(fill)
+                                                .rounding(Rounding::same(3.0))
+                                                .min_size(Vec2::new(22.0, 20.0));
+                                            if ui.add(btn).clicked() {
+                                                self.state.tool_state.grid_unit = *unit;
+                                            }
+                                        }
+                                    }
+
+                                    // ── Separator ──
+                                    ui.add(egui::Separator::default().vertical().spacing(4.0));
+
+                                    // ── Snapshot ──
+                                    if tool_btn(ui, &LucideIcon::Camera.unicode().to_string(), "Snapshot (Ctrl+P)", false) {
+                                        snapshot_requested = true;
+                                    }
+                                });
+                            });
+                    });
+            }
+
+            // ━━━━━━━━━━━━━━━ SCALE BAR (bottom-left corner) ━━━━━━━━━━━━━━━━
+            if self.state.tool_state.show_scale_bar {
+                let screen = ctx.screen_rect();
+                let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("scale_bar")));
+                let bar_margin = 20.0;
+                let bar_y = screen.bottom() - bar_margin;
+                let bar_x_start = bar_margin + 10.0;
+
+                // Pick a nice bar length: find largest round value ≤ 200px at current zoom
+                let zoom = self.state.tool_state_zoom;
+                if zoom > 0.0 {
+                    let nice_values: &[f32] = &[0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1.0, 2.0, 5.0, 10.0, 20.0, 50.0, 100.0, 200.0, 500.0];
+                    let max_px = 200.0;
+                    let mut bar_world = 1.0_f32;
+                    for &v in nice_values.iter().rev() {
+                        if v * zoom <= max_px {
+                            bar_world = v;
+                            break;
+                        }
+                    }
+                    let bar_px = bar_world * zoom;
+                    let bar_x_end = bar_x_start + bar_px;
+                    let tick_h = 6.0;
+                    let bar_color = Color32::from_rgb(60, 60, 60);
+
+                    // Bar line
+                    painter.line_segment(
+                        [egui::pos2(bar_x_start, bar_y), egui::pos2(bar_x_end, bar_y)],
+                        Stroke::new(2.0, bar_color),
+                    );
+                    // Left tick
+                    painter.line_segment(
+                        [egui::pos2(bar_x_start, bar_y - tick_h), egui::pos2(bar_x_start, bar_y + tick_h)],
+                        Stroke::new(2.0, bar_color),
+                    );
+                    // Right tick
+                    painter.line_segment(
+                        [egui::pos2(bar_x_end, bar_y - tick_h), egui::pos2(bar_x_end, bar_y + tick_h)],
+                        Stroke::new(2.0, bar_color),
+                    );
+                    // Label
+                    let unit = self.state.tool_state.grid_unit;
+                    let value = unit.from_mm(bar_world);
+                    let label = if value >= 1.0 {
+                        format!("{:.0} {}", value, unit.label())
+                    } else {
+                        format!("{:.2} {}", value, unit.label())
+                    };
+                    painter.text(
+                        egui::pos2((bar_x_start + bar_x_end) / 2.0, bar_y - tick_h - 4.0),
+                        egui::Align2::CENTER_BOTTOM,
+                        label,
+                        egui::FontId::proportional(11.0),
+                        bar_color,
+                    );
+                }
+            }
+
+            // ━━━━━━━━━━ RULER MEASUREMENTS overlay ━━━━━━━━━━━━━━━━━━
+            {
+                let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("ruler_overlay")));
+                let ruler_color = Color32::from_rgb(220, 50, 50);
+                let label_bg = Color32::from_rgba_premultiplied(255, 255, 255, 200);
+                let unit = self.state.tool_state.grid_unit;
+
+                // Draw persistent measurements
+                for m in &self.state.tool_state.ruler_measurements {
+                    let s = self.state.tool_state_view_transform.as_ref().map(|(vw, vh, view)| {
+                        let s_start = view.world_to_screen(m.start.x, m.start.y, *vw, *vh);
+                        let s_end = view.world_to_screen(m.end.x, m.end.y, *vw, *vh);
+                        // Offset by toolbar
+                        (
+                            egui::pos2(s_start.x, s_start.y + TOOLBAR_HEIGHT),
+                            egui::pos2(s_end.x, s_end.y + TOOLBAR_HEIGHT),
+                        )
+                    });
+                    if let Some((p1, p2)) = s {
+                        painter.line_segment([p1, p2], Stroke::new(2.0, ruler_color));
+                        // End dots
+                        painter.circle_filled(p1, 4.0, ruler_color);
+                        painter.circle_filled(p2, 4.0, ruler_color);
+                        // Label
+                        let mid = egui::pos2((p1.x + p2.x) / 2.0, (p1.y + p2.y) / 2.0);
+                        let dist_display = unit.from_mm(m.distance_mm);
+                        let label = format!("{:.3} {}", dist_display, unit.label());
+                        let text_rect = painter.text(
+                            mid + egui::vec2(0.0, -12.0),
+                            egui::Align2::CENTER_BOTTOM,
+                            &label,
+                            egui::FontId::proportional(12.0),
+                            ruler_color,
+                        );
+                        painter.rect_filled(text_rect.expand(2.0), Rounding::same(2.0), label_bg);
+                        painter.text(
+                            mid + egui::vec2(0.0, -12.0),
+                            egui::Align2::CENTER_BOTTOM,
+                            &label,
+                            egui::FontId::proportional(12.0),
+                            ruler_color,
+                        );
+                    }
+                }
+
+                // Draw live ruler line (start → current cursor)
+                if self.state.tool_state.active_mode == ToolMode::Ruler {
+                    if let Some(start) = self.state.tool_state.ruler_start {
+                        if let Some(end) = self.state.tool_state.ruler_end {
+                            if let Some((vw, vh, view)) = self.state.tool_state_view_transform.as_ref() {
+                                let s_start = view.world_to_screen(start.x, start.y, *vw, *vh);
+                                let s_end = view.world_to_screen(end.x, end.y, *vw, *vh);
+                                let p1 = egui::pos2(s_start.x, s_start.y + TOOLBAR_HEIGHT);
+                                let p2 = egui::pos2(s_end.x, s_end.y + TOOLBAR_HEIGHT);
+                                painter.line_segment([p1, p2], Stroke::new(1.5, ruler_color));
+                                painter.circle_filled(p1, 4.0, ruler_color);
+                                painter.circle_filled(p2, 3.0, Color32::from_rgba_premultiplied(220, 50, 50, 150));
+                                let dist_mm = start.distance_to(&end);
+                                let dist_display = unit.from_mm(dist_mm);
+                                let mid = egui::pos2((p1.x + p2.x) / 2.0, (p1.y + p2.y) / 2.0);
+                                let label = format!("{:.3} {}", dist_display, unit.label());
+                                painter.text(
+                                    mid + egui::vec2(0.0, -12.0),
+                                    egui::Align2::CENTER_BOTTOM,
+                                    &label,
+                                    egui::FontId::proportional(12.0),
+                                    ruler_color,
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+
+            // ━━━━━━━━━━━ ZOOM SELECTION RECTANGLE overlay ━━━━━━━━━━━━━
+            if let (Some(start), Some(end)) = (self.state.tool_state.zoom_rect_start, self.state.tool_state.zoom_rect_end) {
+                let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("zoom_rect")));
+                let rect = egui::Rect::from_two_pos(
+                    egui::pos2(start.x, start.y),
+                    egui::pos2(end.x, end.y),
+                );
+                painter.rect_filled(rect, 0.0, Color32::from_rgba_premultiplied(25, 118, 210, 30));
+                painter.rect_stroke(rect, 0.0, Stroke::new(1.5, ACCENT));
+            }
+
+            // ━━━━━━━━━━━━━━━ GRID LABELS overlay ━━━━━━━━━━━━━━━━━━━━
+            if self.state.tool_state.show_grid {
+                if let Some((vw, vh, view)) = self.state.tool_state_view_transform.as_ref() {
+                    let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("grid_labels")));
+                    let (_, major_spacing) = crate::infrastructure::rendering::GridRenderer::spacing(view.zoom);
+                    let (vis_min, vis_max) = view.visible_bounds(*vw, *vh);
+                    let unit = self.state.tool_state.grid_unit;
+                    let label_color = Color32::from_rgb(100, 100, 100);
+                    let label_bg = Color32::from_rgba_premultiplied(250, 250, 250, 200);
+
+                    // Bottom edge labels (X axis)
+                    let x_start = (vis_min.x / major_spacing).floor() * major_spacing;
+                    let mut x = x_start;
+                    while x <= vis_max.x {
+                        let screen_pt = view.world_to_screen(x, vis_min.y, *vw, *vh);
+                        let sx = screen_pt.x;
+                        let sy = *vh + TOOLBAR_HEIGHT - 2.0; // bottom of viewport
+                        if sx > 50.0 && sx < *vw - 20.0 {
+                            let val = unit.from_mm(x);
+                            let label = if val.abs() >= 1.0 { format!("{:.0}", val) } else { format!("{:.2}", val) };
+                            let r = painter.text(
+                                egui::pos2(sx, sy),
+                                egui::Align2::CENTER_BOTTOM,
+                                &label,
+                                egui::FontId::proportional(9.0),
+                                label_color,
+                            );
+                            painter.rect_filled(r.expand(1.0), 0.0, label_bg);
+                            painter.text(
+                                egui::pos2(sx, sy),
+                                egui::Align2::CENTER_BOTTOM,
+                                &label,
+                                egui::FontId::proportional(9.0),
+                                label_color,
+                            );
+                        }
+                        x += major_spacing;
+                    }
+
+                    // Left edge labels (Y axis)
+                    let y_start = (vis_min.y / major_spacing).floor() * major_spacing;
+                    let mut y = y_start;
+                    while y <= vis_max.y {
+                        let screen_pt = view.world_to_screen(vis_min.x, y, *vw, *vh);
+                        let sx = 4.0;
+                        let sy = screen_pt.y + TOOLBAR_HEIGHT;
+                        if sy > TOOLBAR_HEIGHT + 20.0 && sy < TOOLBAR_HEIGHT + *vh - 20.0 {
+                            let val = unit.from_mm(y);
+                            let label = if val.abs() >= 1.0 { format!("{:.0}", val) } else { format!("{:.2}", val) };
+                            let r = painter.text(
+                                egui::pos2(sx, sy),
+                                egui::Align2::LEFT_CENTER,
+                                &label,
+                                egui::FontId::proportional(9.0),
+                                label_color,
+                            );
+                            painter.rect_filled(r.expand(1.0), 0.0, label_bg);
+                            painter.text(
+                                egui::pos2(sx, sy),
+                                egui::Align2::LEFT_CENTER,
+                                &label,
+                                egui::FontId::proportional(9.0),
+                                label_color,
+                            );
+                        }
+                        y += major_spacing;
+                    }
+                }
             }
         });
 
@@ -864,6 +1315,13 @@ impl UiRenderer {
             .map(|v| v.repaint_delay.is_zero())
             .unwrap_or(false);
 
+        // Build tool state output
+        self.state.tool_state.snapshot_requested = snapshot_requested;
+        let mut tool_output = self.state.tool_state.clone();
+        // Propagate zoom/fit/snapshot requests via special fields read by the app
+        // We use a simple convention: the app reads tool_state from UiOutput
+        // and the tool_state already contains snapshot_requested, active_mode, etc.
+
         // Store output for deferred painting
         self.pending_output = Some(full_output);
 
@@ -877,10 +1335,21 @@ impl UiRenderer {
             param_mode: self.state.param_mode,
             param_filter_min: self.state.param_filter_min,
             param_filter_max: self.state.param_filter_max,
-            needs_repaint,
+            needs_repaint: needs_repaint || zoom_in_requested || zoom_out_requested || fit_view_requested,
             open_file_requested,
+            tool_state: tool_output,
+            zoom_in_requested,
+            zoom_out_requested,
+            fit_view_requested,
         }
     }
+
+    /// Whether a zoom-in was requested this frame via toolbar button
+    pub fn zoom_in_requested(&self) -> bool {
+        // We use a frame-local flag — let the app poll via UiOutput
+        false // handled through tool_state indirectly
+    }
+
 
     /// Paint the egui overlay. Must be called after `run_ui()` and after GL content is rendered.
     pub fn paint(&mut self, window: &winit::window::Window) {

@@ -9,18 +9,19 @@ use std::sync::Arc;
 use winit::event::WindowEvent;
 use winit::event_loop::EventLoop;
 
-use crate::application::ports::{ConfigManager, FileLoader, Renderer};
+use crate::application::ports::{ConfigManager, FileLoader, GridUnit, Renderer};
 use crate::application::use_cases::{
     LoadToolpathUseCase, NavigateLayersUseCase, RenderViewUseCase, DisplayOption,
 };
 use crate::domain::entities::Toolpath;
-use crate::domain::value_objects::{Bounds2D, Color};
+use crate::domain::value_objects::{Bounds2D, Color, Point2D};
 use crate::infrastructure::config::JsonConfigManager;
 use crate::infrastructure::file_adapters::IltLoader;
 use crate::infrastructure::rendering::GlRenderer;
 use crate::presentation::{
     AppEvent, AppWindow, InputAction, MouseButton, ParamRanges, WindowConfig,
     create_window, run_event_loop, UiRenderer, TOOLBAR_HEIGHT,
+    ToolMode, RulerMeasurement, SnapshotFormat,
 };
 
 /// Height of the top toolbar in pixels
@@ -275,7 +276,31 @@ fn handle_event(
         AppEvent::MouseMove { x: _, y: _ } => {
             // Handle panning only when pointer is in viewport
             if pointer_in_viewport {
-                if window.input_state.middle_pressed || 
+                let tool_mode = ui.state.tool_state.active_mode;
+                let shift_held = window.input_state.shift_held;
+
+                // Zoom selection drag (Shift+left drag OR ZoomSelect mode)
+                if window.input_state.left_pressed && (shift_held || tool_mode == ToolMode::ZoomSelect) {
+                    // Update end point of zoom rectangle (screen coords)
+                    let mouse = &window.input_state.mouse_pos;
+                    ui.state.tool_state.zoom_rect_end = Some(Point2D::new(mouse.x, mouse.y));
+                    window.request_redraw();
+                }
+                // Ruler live preview (move cursor while placing second point)
+                else if tool_mode == ToolMode::Ruler && ui.state.tool_state.ruler_start.is_some() {
+                    let mouse = &window.input_state.mouse_pos;
+                    let (width, height) = window.size();
+                    let viewport_h = height as f32 - UI_TOOLBAR_HEIGHT;
+                    let viewport_mouse_x = mouse.x;
+                    let viewport_mouse_y = mouse.y - UI_TOOLBAR_HEIGHT;
+                    let world = state.render.view_state.screen_to_world(
+                        viewport_mouse_x, viewport_mouse_y, width as f32, viewport_h,
+                    );
+                    ui.state.tool_state.ruler_end = Some(world);
+                    window.request_redraw();
+                }
+                // Normal panning
+                else if window.input_state.middle_pressed || 
                    (window.input_state.left_pressed && window.input_state.ctrl_held) {
                     let delta = window.input_state.mouse_delta();
                     state.render.pan(delta.x, -delta.y);
@@ -289,8 +314,83 @@ fn handle_event(
             // egui forwarding already happened above; nothing else to do
         }
 
-        AppEvent::MouseButton { button: _, pressed: _ } => {
-            // Could handle click events here
+        AppEvent::MouseButton { button, pressed } => {
+            if pointer_in_viewport {
+                let tool_mode = ui.state.tool_state.active_mode;
+                let shift_held = window.input_state.shift_held;
+                let mouse = &window.input_state.mouse_pos;
+
+                match button {
+                    MouseButton::Left if pressed => {
+                        // Zoom selection start
+                        if shift_held || tool_mode == ToolMode::ZoomSelect {
+                            ui.state.tool_state.zoom_rect_start = Some(Point2D::new(mouse.x, mouse.y));
+                            ui.state.tool_state.zoom_rect_end = Some(Point2D::new(mouse.x, mouse.y));
+                        }
+                        // Ruler click
+                        else if tool_mode == ToolMode::Ruler {
+                            let (width, height) = window.size();
+                            let viewport_h = height as f32 - UI_TOOLBAR_HEIGHT;
+                            let viewport_mouse_x = mouse.x;
+                            let viewport_mouse_y = mouse.y - UI_TOOLBAR_HEIGHT;
+                            let world = state.render.view_state.screen_to_world(
+                                viewport_mouse_x, viewport_mouse_y, width as f32, viewport_h,
+                            );
+
+                            if ui.state.tool_state.ruler_start.is_none() {
+                                // Set start point
+                                ui.state.tool_state.ruler_start = Some(world);
+                                ui.state.tool_state.ruler_end = Some(world);
+                            } else {
+                                // Set end point → create measurement
+                                let start = ui.state.tool_state.ruler_start.unwrap();
+                                let distance_mm = start.distance_to(&world);
+                                ui.state.tool_state.ruler_measurements.push(RulerMeasurement {
+                                    start,
+                                    end: world,
+                                    distance_mm,
+                                });
+                                // Reset for next measurement
+                                ui.state.tool_state.ruler_start = None;
+                                ui.state.tool_state.ruler_end = None;
+                            }
+                            window.request_redraw();
+                        }
+                    }
+                    MouseButton::Left if !pressed => {
+                        // Zoom selection release → zoom to rectangle
+                        if let (Some(start), Some(end)) = (
+                            ui.state.tool_state.zoom_rect_start.take(),
+                            ui.state.tool_state.zoom_rect_end.take(),
+                        ) {
+                            let dx = (end.x - start.x).abs();
+                            let dy = (end.y - start.y).abs();
+                            if dx > 5.0 && dy > 5.0 {
+                                // Convert screen rect to world bounds
+                                let (width, height) = window.size();
+                                let viewport_h = height as f32 - UI_TOOLBAR_HEIGHT;
+                                let viewport_w = width as f32;
+
+                                let w1 = state.render.view_state.screen_to_world(
+                                    start.x, start.y - UI_TOOLBAR_HEIGHT, viewport_w, viewport_h,
+                                );
+                                let w2 = state.render.view_state.screen_to_world(
+                                    end.x, end.y - UI_TOOLBAR_HEIGHT, viewport_w, viewport_h,
+                                );
+
+                                let bounds = Bounds2D::new(
+                                    Point2D::new(w1.x.min(w2.x), w1.y.min(w2.y)),
+                                    Point2D::new(w1.x.max(w2.x), w1.y.max(w2.y)),
+                                );
+                                state.render.view_state.fit_to_bounds(&bounds, viewport_w, viewport_h);
+                                state.needs_redraw = true;
+                            }
+                            window.request_redraw();
+                        }
+                    }
+                    _ => {}
+                }
+            }
         }
 
         AppEvent::Scroll { delta } => {
@@ -440,6 +540,19 @@ fn handle_key_action(
             open_file_dialog(window, state, ui, load_use_case);
         }
 
+        InputAction::Snapshot => {
+            // Signal snapshot request via UI state — will be handled in render_frame
+            ui.state.tool_state.snapshot_requested = true;
+            window.request_redraw();
+        }
+
+        InputAction::ToggleGrid => {
+            ui.state.tool_state.show_grid = !ui.state.tool_state.show_grid;
+            state.render.display_options.show_grid = ui.state.tool_state.show_grid;
+            state.needs_redraw = true;
+            window.request_redraw();
+        }
+
         InputAction::Quit => {
             // Handled in main event handler
         }
@@ -486,12 +599,35 @@ fn render_frame(
     ui: &mut UiRenderer,
     load_use_case: &LoadToolpathUseCase,
 ) -> Result<()> {
+    // Update view transform for UI overlays (ruler, grid labels, scale bar)
+    let (vp_w, vp_h) = window.size();
+    let viewport_height = vp_h as f32 - UI_TOOLBAR_HEIGHT;
+    let viewport_width = vp_w as f32;
+    ui.update_view_transform(&state.render.view_state, viewport_width, viewport_height);
+
     // 1. Run egui logic to get current toggle/slider values (no painting yet)
     let ui_output = ui.run_ui(&window.window);
 
     // Handle file open request from Load button
     if ui_output.open_file_requested {
         open_file_dialog(window, state, ui, load_use_case);
+    }
+
+    // Handle zoom in/out/fit button clicks from the tool panel
+    if ui_output.zoom_in_requested {
+        state.render.zoom(1.2, viewport_width / 2.0, viewport_height / 2.0, viewport_width, viewport_height);
+        state.needs_redraw = true;
+    }
+    if ui_output.zoom_out_requested {
+        state.render.zoom(0.8, viewport_width / 2.0, viewport_height / 2.0, viewport_width, viewport_height);
+        state.needs_redraw = true;
+    }
+    if ui_output.fit_view_requested {
+        if let Some(ref toolpath) = state.toolpath {
+            let render_height = viewport_height.max(100.0);
+            state.render.fit_to_stack(&toolpath.slice_stack, viewport_width, render_height);
+            state.needs_redraw = true;
+        }
     }
 
     // Handle layer changes from slider/buttons
@@ -511,7 +647,8 @@ fn render_frame(
         || state.render.display_options.show_wait_markers != ui_output.show_wait_markers
         || state.render.display_options.param_mode != ui_output.param_mode
         || state.render.display_options.param_filter_min != ui_output.param_filter_min
-        || state.render.display_options.param_filter_max != ui_output.param_filter_max;
+        || state.render.display_options.param_filter_max != ui_output.param_filter_max
+        || state.render.display_options.show_grid != ui_output.tool_state.show_grid;
 
     state.render.display_options.show_slices = ui_output.show_slices;
     state.render.display_options.show_contours = ui_output.show_contours;
@@ -521,12 +658,19 @@ fn render_frame(
     state.render.display_options.param_mode = ui_output.param_mode;
     state.render.display_options.param_filter_min = ui_output.param_filter_min;
     state.render.display_options.param_filter_max = ui_output.param_filter_max;
+    state.render.display_options.show_grid = ui_output.tool_state.show_grid;
+    state.render.display_options.grid_unit = ui_output.tool_state.grid_unit;
 
     // 2. Restore GL state first (egui leaves scissor test enabled), then clear
     renderer.begin_frame()?;
 
     let bg_color = state.render.display_options.background_color;
     renderer.clear(&bg_color)?;
+
+    // Render background grid BEFORE layer content
+    if state.render.display_options.show_grid {
+        renderer.render_grid(&state.render.view_state)?;
+    }
 
     // Render current layer if we have a toolpath
     if let Some(ref toolpath) = state.toolpath {
@@ -585,6 +729,12 @@ fn render_frame(
 
     renderer.end_frame()?;
 
+    // Handle snapshot request AFTER GL rendering, BEFORE egui overlay
+    let snapshot_requested = ui_output.tool_state.snapshot_requested;
+    if snapshot_requested {
+        trigger_snapshot(renderer, state, &ui_output.tool_state);
+    }
+
     // 3. Paint egui overlay on top of GL content
     ui.paint(&window.window);
 
@@ -623,4 +773,147 @@ fn update_window_title(window: &AppWindow, state: &AppState) {
     } else {
         window.set_title("Toolpath Viewer - No file loaded");
     }
+}
+
+/// Trigger a snapshot (screenshot or SVG export)
+fn trigger_snapshot(
+    renderer: &GlRenderer,
+    state: &AppState,
+    tool_state: &crate::presentation::ToolState,
+) {
+    // Show save dialog with format filter
+    let file = rfd::FileDialog::new()
+        .add_filter("PNG Image", &["png"])
+        .add_filter("SVG Vector", &["svg"])
+        .set_title("Save Snapshot")
+        .save_file();
+
+    if let Some(path) = file {
+        let ext = path.extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("png")
+            .to_lowercase();
+
+        match ext.as_str() {
+            "svg" => {
+                if let Err(e) = export_svg(&path, state, tool_state) {
+                    error!("SVG export failed: {}", e);
+                }
+            }
+            _ => {
+                // PNG capture
+                let (w, h, pixels) = renderer.capture_framebuffer();
+                match image::ImageBuffer::<image::Rgba<u8>, _>::from_raw(w, h, pixels) {
+                    Some(img) => {
+                        if let Err(e) = img.save(&path) {
+                            error!("Failed to save PNG: {}", e);
+                        } else {
+                            info!("Snapshot saved: {}", path.display());
+                        }
+                    }
+                    None => {
+                        error!("Failed to create image buffer");
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Export the current view as SVG
+fn export_svg(
+    path: &std::path::Path,
+    state: &AppState,
+    tool_state: &crate::presentation::ToolState,
+) -> Result<()> {
+    use std::io::Write;
+    use crate::domain::entities::VectorType;
+
+    let toolpath = state.toolpath.as_ref()
+        .ok_or_else(|| anyhow::anyhow!("No toolpath loaded"))?;
+    let layer = state.navigation.get_current_layer(&toolpath.slice_stack)
+        .ok_or_else(|| anyhow::anyhow!("No current layer"))?;
+
+    // Compute bounds for SVG viewBox
+    let (min_pt, max_pt) = layer.bounds()
+        .unwrap_or((crate::domain::value_objects::Point2D::zero(), crate::domain::value_objects::Point2D::new(100.0, 100.0)));
+    let padding = 5.0;
+    let vb_x = min_pt.x - padding;
+    let vb_y = min_pt.y - padding;
+    let vb_w = (max_pt.x - min_pt.x) + padding * 2.0;
+    let vb_h = (max_pt.y - min_pt.y) + padding * 2.0;
+
+    let mut svg = String::new();
+    svg.push_str(&format!(
+        r##"<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="{:.3} {:.3} {:.3} {:.3}" width="{:.0}" height="{:.0}">
+<rect x="{:.3}" y="{:.3}" width="{:.3}" height="{:.3}" fill="#FAFAFA"/>
+"##,
+        vb_x, vb_y, vb_w, vb_h,
+        vb_w.max(800.0), vb_h.max(600.0),
+        vb_x, vb_y, vb_w, vb_h,
+    ));
+
+    // Color map for vector types
+    let color_for_type = |vt: VectorType| -> &str {
+        match vt {
+            VectorType::Boundary => "#2C3E50",
+            VectorType::Contour | VectorType::BaseContour | VectorType::CoincidingContour => "#00BCD4",
+            VectorType::DepthContour => "#AD1457",
+            VectorType::Hatch => "#E91E63",
+            VectorType::Support => "#616161",
+            VectorType::Travel => "#388E3C",
+        }
+    };
+
+    for vector in &layer.vectors {
+        // Apply same visibility filters as display
+        let visible = match vector.vector_type {
+            VectorType::Boundary => state.render.display_options.show_slices,
+            VectorType::Contour | VectorType::BaseContour | VectorType::CoincidingContour => state.render.display_options.show_contours,
+            VectorType::DepthContour => state.render.display_options.show_depth_contours,
+            VectorType::Hatch => state.render.display_options.show_hatches,
+            _ => true,
+        };
+        if !visible || vector.points.len() < 2 {
+            continue;
+        }
+
+        let color = color_for_type(vector.vector_type);
+        let stroke_width = match vector.vector_type {
+            VectorType::Hatch => 0.05,
+            VectorType::Boundary => 0.1,
+            _ => 0.07,
+        };
+
+        if vector.vector_type == VectorType::Hatch && vector.points.len() == 2 {
+            // Single line segment
+            svg.push_str(&format!(
+                r#"<line x1="{:.3}" y1="{:.3}" x2="{:.3}" y2="{:.3}" stroke="{}" stroke-width="{:.3}" stroke-linecap="round"/>"#,
+                vector.points[0].x, vector.points[0].y,
+                vector.points[1].x, vector.points[1].y,
+                color, stroke_width,
+            ));
+            svg.push('\n');
+        } else {
+            // Polyline
+            let points_str: String = vector.points.iter()
+                .map(|p| format!("{:.3},{:.3}", p.x, p.y))
+                .collect::<Vec<_>>()
+                .join(" ");
+            svg.push_str(&format!(
+                r#"<polyline points="{}" fill="none" stroke="{}" stroke-width="{:.3}" stroke-linecap="round" stroke-linejoin="round"/>"#,
+                points_str, color, stroke_width,
+            ));
+            svg.push('\n');
+        }
+    }
+
+    svg.push_str("</svg>\n");
+
+    let mut file = std::fs::File::create(path)?;
+    file.write_all(svg.as_bytes())?;
+    info!("SVG exported: {}", path.display());
+
+    Ok(())
 }

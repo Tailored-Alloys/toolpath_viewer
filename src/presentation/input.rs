@@ -39,6 +39,10 @@ pub enum InputAction {
     ToggleArrows,
     /// Open file dialog
     OpenFile,
+    /// Take a snapshot (screenshot)
+    Snapshot,
+    /// Toggle background grid
+    ToggleGrid,
     /// Quit application
     Quit,
 }
@@ -114,9 +118,13 @@ pub fn key_to_action(key: &str, ctrl: bool, shift: bool) -> Option<InputAction> 
         ("c", false, false) => Some(InputAction::ToggleContours),
         ("h", false, false) => Some(InputAction::ToggleHatches),
         ("a", false, false) => Some(InputAction::ToggleArrows),
+        ("g", false, false) => Some(InputAction::ToggleGrid),
         
         // File operations
         ("o", true, false) => Some(InputAction::OpenFile),
+
+        // Snapshot
+        ("p", true, false) => Some(InputAction::Snapshot),
         
         // Application
         ("q", true, false) | ("escape", _, _) => Some(InputAction::Quit),
