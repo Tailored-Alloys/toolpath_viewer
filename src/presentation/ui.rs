@@ -150,6 +150,8 @@ pub struct UiRenderer {
     pub state: UiState,
     /// Deferred egui output for split run/paint cycle
     pending_output: Option<egui::FullOutput>,
+    /// Logo texture for the toolbar
+    logo_texture: Option<egui::TextureHandle>,
 }
 
 /// Set up fonts including the Lucide icon font
@@ -256,12 +258,25 @@ impl UiRenderer {
         let painter = Painter::new(gl, "", None)
             .expect("Failed to create egui painter");
 
+        // Load logo texture from embedded PNG
+        let logo_texture = {
+            let logo_bytes = include_bytes!("assets/logo.png");
+            image::load_from_memory(logo_bytes).ok().map(|img| {
+                let rgba = img.to_rgba8();
+                let size = [rgba.width() as usize, rgba.height() as usize];
+                let pixels = rgba.into_raw();
+                let color_image = egui::ColorImage::from_rgba_unmultiplied(size, &pixels);
+                ctx.load_texture("logo", color_image, egui::TextureOptions::LINEAR)
+            })
+        };
+
         Self {
             ctx,
             winit_state,
             painter,
             state: UiState::default(),
             pending_output: None,
+            logo_texture,
         }
     }
 
@@ -314,8 +329,13 @@ impl UiRenderer {
                     .inner_margin(egui::Margin::symmetric(12.0, 8.0)))
                 .show(ctx, |ui| {
                     ui.horizontal_centered(|ui| {
-                        // App title
-                        ui.label(RichText::new("Toolpath Viewer").size(16.0).strong().color(TEXT_PRIMARY));
+                        // App logo
+                        if let Some(tex) = &self.logo_texture {
+                            let logo_height = 36.0;
+                            let aspect = tex.size()[0] as f32 / tex.size()[1] as f32;
+                            let logo_width = logo_height * aspect;
+                            ui.add(egui::Image::new(tex).fit_to_exact_size(Vec2::new(logo_width, logo_height)));
+                        }
 
                         ui.add_space(16.0);
                         ui.separator();
