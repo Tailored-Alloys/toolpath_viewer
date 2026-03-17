@@ -16,9 +16,11 @@
 use crate::application::ports::{FileError, FileResult};
 use crate::domain::entities::{Layer, LayerParameters, SliceStack, Toolpath, ToolpathMetadata, Vector, VectorType};
 use crate::domain::value_objects::Point2D;
-use log::{debug, trace, warn};
+use log::{debug, info, trace, warn};
+use rayon::prelude::*;
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 /// CLI file parser
 pub struct CliParser {
@@ -55,6 +57,7 @@ impl CliParser {
     /// 
     /// CLI files use $$ as command delimiters anywhere in the file (not just line starts).
     /// Commands can span multiple lines with coordinates continuing until the next $$ marker.
+    /// Layers are parsed in parallel using rayon for improved throughput on large files.
     pub fn parse<R: Read>(&self, reader: R) -> FileResult<Toolpath> {
         // Read entire content
         let mut content = String::new();
@@ -62,26 +65,18 @@ impl CliParser {
         buf_reader.read_to_string(&mut content)
             .map_err(|e| FileError::IoError(e))?;
         
-        let mut parser_state = CliParserState::new(self.scale);
-        parser_state.hatch_type_override = self.hatch_type_override;
-        parser_state.source_label = self.source_label.clone();
-        
-        // Split by $$ and process each command
-        // The first split part (before first $$) might be empty or header data
+        // Normalize all $$ commands into a list of strings
         let parts: Vec<&str> = content.split("$$").collect();
+        let mut commands: Vec<String> = Vec::with_capacity(parts.len());
         
         for (idx, part) in parts.iter().enumerate() {
             if idx == 0 && !part.trim().is_empty() {
-                // Data before first $$ - likely header or continuation
                 continue;
             }
-            
             let trimmed = part.trim();
             if trimmed.is_empty() {
                 continue;
             }
-            
-            // Remove all newlines and extra whitespace, normalize to single content
             let normalized: String = trimmed
                 .chars()
                 .map(|c| if c.is_whitespace() { ' ' } else { c })
@@ -89,17 +84,118 @@ impl CliParser {
                 .split_whitespace()
                 .collect::<Vec<&str>>()
                 .join("");
-            
             if !normalized.is_empty() {
-                // Prepend $$ for process_line compatibility
-                let command = format!("$${}", normalized);
-                if let Err(e) = parser_state.process_line(&command, idx + 1) {
-                    trace!("Parse issue at command {}: {:?}", idx, e);
-                }
+                commands.push(format!("$${}", normalized));
             }
         }
 
-        parser_state.finalize()
+        // First pass: extract header and identify layer boundaries
+        let mut header_data: HashMap<String, String> = HashMap::new();
+        let mut metadata = ToolpathMetadata::default();
+        let mut in_header = false;
+        
+        // Collect groups of commands per layer: Vec<(layer_cmd_index, Vec<command_strings>)>
+        let mut layer_groups: Vec<Vec<String>> = Vec::new();
+        let mut current_group: Vec<String> = Vec::new();
+        
+        for cmd in &commands {
+            if cmd.starts_with("$$HEADERSTART") {
+                in_header = true;
+                continue;
+            }
+            if cmd.starts_with("$$HEADEREND") {
+                in_header = false;
+                // Process header
+                if let Some(units) = header_data.get("UNITS") {
+                    let u: String = units.to_uppercase();
+                    if u.contains("INCH") {
+                        // scale handled per-parser instance
+                    }
+                }
+                metadata.format = "CLI".to_string();
+                if let Some(label) = header_data.get("LABEL") {
+                    metadata.properties.insert("label".to_string(), label.clone());
+                }
+                continue;
+            }
+            if in_header {
+                let line = cmd.trim_start_matches("$$");
+                if let Some(idx) = line.find('/') {
+                    let key = line[..idx].trim().to_uppercase();
+                    let value = line[idx + 1..].trim().to_string();
+                    header_data.insert(key, value);
+                }
+                continue;
+            }
+            if cmd.starts_with("$$GEOMETRYSTART") || cmd.starts_with("$$GEOMETRYEND") {
+                continue;
+            }
+            
+            // Check if this is a LAYER command (starts a new group)
+            let upper = cmd.trim_start_matches("$$");
+            let is_layer = upper.starts_with("LAYER/") || upper.starts_with("LAYER ");
+            
+            if is_layer {
+                // Push the previous group if it has content
+                if !current_group.is_empty() {
+                    layer_groups.push(std::mem::take(&mut current_group));
+                }
+            }
+            current_group.push(cmd.clone());
+        }
+        // Push the last group
+        if !current_group.is_empty() {
+            layer_groups.push(current_group);
+        }
+        
+        let scale = self.scale;
+        let hatch_type_override = self.hatch_type_override;
+        let source_label = self.source_label.clone();
+        let global_id_counter = AtomicU64::new(0);
+        let num_groups = layer_groups.len();
+        
+        info!("Parsing {} layer groups in parallel", num_groups);
+        
+        // Parse each layer group in parallel
+        let layers: Vec<Layer> = layer_groups
+            .into_par_iter()
+            .filter_map(|group| {
+                let mut state = CliParserState::new(scale);
+                state.hatch_type_override = hatch_type_override;
+                state.source_label = source_label.clone();
+                
+                for (i, cmd) in group.iter().enumerate() {
+                    if let Err(e) = state.process_line(cmd, i + 1) {
+                        trace!("Parse issue in parallel group: {:?}", e);
+                    }
+                }
+                
+                // Finalize this group's layer
+                if let Some(mut layer) = state.current_layer.take() {
+                    state.attach_params_to_layer(&mut layer);
+                    // Assign globally unique vector IDs
+                    let base_id = global_id_counter.fetch_add(layer.vectors.len() as u64, Ordering::Relaxed);
+                    for (i, vec) in layer.vectors.iter_mut().enumerate() {
+                        vec.id = base_id + i as u64 + 1;
+                    }
+                    Some(layer)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        
+        // Sort layers by Z height and fix indices
+        let mut layers = layers;
+        layers.sort_by(|a, b| a.z_height.partial_cmp(&b.z_height).unwrap());
+        for (i, layer) in layers.iter_mut().enumerate() {
+            layer.index = i;
+        }
+        
+        info!("Parallel parse complete: {} layers", layers.len());
+        
+        let slice_stack = SliceStack::with_layers("CLI File", layers);
+        Ok(Toolpath::with_metadata(slice_stack, metadata))
     }
 }
 

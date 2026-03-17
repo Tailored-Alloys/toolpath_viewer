@@ -7,7 +7,7 @@ use crate::application::use_cases::ColorScheme;
 use crate::domain::entities::{Layer, Vector, VectorType};
 use crate::domain::value_objects::{Color, Point2D};
 use crate::infrastructure::rendering::{
-    LineBatch, ShaderProgram,
+    GridRenderer, LineBatch, ShaderProgram,
     DEFAULT_FRAGMENT_SHADER, DEFAULT_VERTEX_SHADER,
 };
 use log::{debug, info};
@@ -44,6 +44,16 @@ fn view_matrix(view: &ViewState) -> [f32; 16] {
 ///
 /// Arrow angle half-width in radians (~25°).
 const ARROW_HALF_ANGLE: f32 = 0.4363; // std::f32::consts is not const-fn friendly, pre-computed
+
+/// Minimum arrow arm length (world units, mm) — prevents invisible arrows on very short vectors.
+const ARROW_ARM_MIN: f32 = 0.02;
+/// Maximum arrow arm length (world units, mm) — prevents oversized arrows on long vectors.
+const ARROW_ARM_MAX: f32 = 0.15;
+
+/// Minimum star marker radius (world units, mm) — prevents invisible wait time markers.
+const STAR_RADIUS_MIN: f32 = 0.015;
+/// Maximum star marker radius (world units, mm) — prevents oversized wait time markers.
+const STAR_RADIUS_MAX: f32 = 0.12;
 
 /// Add an arrowhead to `batch` at `tip` pointing in direction (`dx`, `dy`).
 /// `arm_len` controls the size of the arrow arms.
@@ -124,6 +134,8 @@ pub struct GlRenderer {
     wait_marker_batch: LineBatch,
     /// Whether to render wait markers
     show_wait_markers: bool,
+    /// Grid renderer
+    grid_renderer: GridRenderer,
     color_scheme: ColorScheme,
     initialized: bool,
     /// Track last hatch count to reduce log spam
@@ -147,6 +159,7 @@ impl GlRenderer {
             arrow_batch: LineBatch::new(),
             wait_marker_batch: LineBatch::new(),
             show_wait_markers: true,
+            grid_renderer: GridRenderer::new(),
             color_scheme: ColorScheme::default(),
             initialized: false,
             last_hatch_count: usize::MAX,
@@ -167,6 +180,55 @@ impl GlRenderer {
     /// Set vertical view offset (to shift content away from top toolbar)
     pub fn set_view_offset_y(&mut self, offset: f32) {
         self.view_offset_y = offset;
+    }
+
+    /// Render the background grid before layer content.
+    pub fn render_grid(&mut self, view: &ViewState) -> RenderResult<()> {
+        let shader = self.shader.as_ref().ok_or_else(|| {
+            RenderError::InvalidState("Shader not initialized".to_string())
+        })?;
+
+        shader.use_program();
+
+        let half_w = (self.width as f32) / 2.0;
+        let half_h = (self.height as f32) / 2.0;
+        let off_x = self.view_offset_x;
+        let off_y = self.view_offset_y;
+        let projection = ortho(-half_w + off_x, half_w + off_x, -half_h + off_y, half_h + off_y, -1.0, 1.0);
+        shader.set_mat4("uProjection", &projection);
+        let view_mat = view_matrix(view);
+        shader.set_mat4("uView", &view_mat);
+
+        let viewport_w = self.width as f32;
+        let viewport_h = self.height as f32;
+        self.grid_renderer.prepare(view, viewport_w, viewport_h);
+        self.grid_renderer.render();
+
+        Ok(())
+    }
+
+    /// Capture the current framebuffer as RGBA pixels.
+    /// Returns (width, height, rgba_data).
+    pub fn capture_framebuffer(&self) -> (u32, u32, Vec<u8>) {
+        let w = self.width;
+        let h = self.height;
+        let mut pixels = vec![0u8; (w * h * 4) as usize];
+        unsafe {
+            gl::ReadPixels(
+                0, 0, w as i32, h as i32,
+                gl::RGBA, gl::UNSIGNED_BYTE,
+                pixels.as_mut_ptr() as *mut _,
+            );
+        }
+        // Flip vertically (OpenGL origin is bottom-left)
+        let row_size = (w * 4) as usize;
+        let mut flipped = vec![0u8; pixels.len()];
+        for y in 0..h as usize {
+            let src_row = (h as usize - 1 - y) * row_size;
+            let dst_row = y * row_size;
+            flipped[dst_row..dst_row + row_size].copy_from_slice(&pixels[src_row..src_row + row_size]);
+        }
+        (w, h, flipped)
     }
 
     /// Initialize OpenGL state
@@ -208,8 +270,8 @@ impl GlRenderer {
         let dim_color = Color::rgb(0.3, 0.3, 0.3);
 
         let marker_size = compute_marker_size(layer);
-        let arrow_arm = marker_size * 0.8;
-        let star_radius = marker_size * 0.6;
+        let arrow_arm = (marker_size * 0.8).clamp(ARROW_ARM_MIN, ARROW_ARM_MAX);
+        let star_radius = (marker_size * 0.6).clamp(STAR_RADIUS_MIN, STAR_RADIUS_MAX);
         // Place arrows every `arrow_spacing` world-units along polylines
         let arrow_spacing = marker_size * 8.0;
 
@@ -292,7 +354,7 @@ impl GlRenderer {
                         let dx = p1.x - p0.x;
                         let dy = p1.y - p0.y;
                         let hatch_len = (dx * dx + dy * dy).sqrt();
-                        let hatch_arm = (hatch_len * 0.25).min(arrow_arm);
+                        let hatch_arm = (hatch_len * 0.25).clamp(ARROW_ARM_MIN, ARROW_ARM_MAX);
                         add_arrowhead(&mut self.arrow_batch, p1, dx, dy, hatch_arm, &color);
                     }
                     VectorType::Contour | VectorType::BaseContour
@@ -307,7 +369,7 @@ impl GlRenderer {
                             accum += seg_len;
                             if accum >= arrow_spacing {
                                 accum -= arrow_spacing;
-                                add_arrowhead(&mut self.arrow_batch, &pair[1], dx, dy, arrow_arm, &color);
+                                add_arrowhead(&mut self.arrow_batch, &pair[1], dx, dy, arrow_arm.clamp(ARROW_ARM_MIN, ARROW_ARM_MAX), &color);
                             }
                         }
                     }
