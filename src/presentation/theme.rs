@@ -105,6 +105,29 @@ pub fn toolbar_toggle(ui: &mut egui::Ui, icon: &str, active: &mut bool, tooltip:
     response.clicked()
 }
 
+/// Draw a toolbar toggle button using an SVG image (tinted by active state). Returns true if clicked.
+pub fn toolbar_toggle_image(
+    ui: &mut egui::Ui,
+    image_source: egui::ImageSource<'_>,
+    active: &mut bool,
+    tooltip: &str,
+) -> bool {
+    let fill = if *active { TOGGLE_ACTIVE_BG } else { Color32::TRANSPARENT };
+    let tint = if *active { ACCENT } else { TEXT_PRIMARY };
+    let image = egui::Image::new(image_source)
+        .fit_to_exact_size(egui::vec2(20.0, 20.0))
+        .tint(tint);
+    let btn = egui::Button::image(image)
+        .fill(fill)
+        .rounding(Rounding::same(6.0))
+        .min_size(Vec2::new(36.0, 36.0));
+    let response = ui.add(btn).on_hover_text(tooltip);
+    if response.clicked() {
+        *active = !*active;
+    }
+    response.clicked()
+}
+
 /// Draw a toolbar mode button (for parameter mode selection). Returns true if clicked.
 pub fn toolbar_mode_btn(ui: &mut egui::Ui, label: &str, is_selected: bool, tooltip: &str) -> bool {
     let fill = if is_selected { ACCENT } else { TOGGLE_INACTIVE_BG };

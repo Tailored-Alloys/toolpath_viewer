@@ -107,6 +107,58 @@ pub fn simplify_polyline(points: &[Point2D], epsilon: f32) -> Vec<Point2D> {
     }
 }
 
+/// Result of a nearest-vector hit-test query.
+pub struct NearestVectorHit {
+    /// Index of the vector in the layer's `vectors` list.
+    pub vector_index: usize,
+    /// Minimum distance from the query point to the vector's segments (world units).
+    pub distance: f32,
+}
+
+/// Find the nearest vector in a layer to a given world-space point.
+///
+/// Only segments belonging to vectors whose indices are in `visible_indices`
+/// are considered.  Returns `None` when the layer has no qualifying vectors.
+pub fn find_nearest_vector(
+    point: &Point2D,
+    layer: &crate::domain::entities::Layer,
+    visible_indices: &[usize],
+) -> Option<NearestVectorHit> {
+    let mut best: Option<NearestVectorHit> = None;
+
+    for &idx in visible_indices {
+        let vector = match layer.vectors.get(idx) {
+            Some(v) => v,
+            None => continue,
+        };
+        if vector.points.len() < 2 {
+            continue;
+        }
+        // Quick bounding-box rejection
+        if let Some((bb_min, bb_max)) = vector.bounds() {
+            let margin = best.as_ref().map_or(f32::MAX, |b| b.distance);
+            if point.x < bb_min.x - margin
+                || point.x > bb_max.x + margin
+                || point.y < bb_min.y - margin
+                || point.y > bb_max.y + margin
+            {
+                continue;
+            }
+        }
+        for seg in vector.points.windows(2) {
+            let d = point_to_segment_distance(point, &seg[0], &seg[1]);
+            let dominated = best.as_ref().map_or(false, |b| d >= b.distance);
+            if !dominated {
+                best = Some(NearestVectorHit {
+                    vector_index: idx,
+                    distance: d,
+                });
+            }
+        }
+    }
+    best
+}
+
 /// Calculate the bounding box of a set of points
 pub fn calculate_bounds(points: &[Point2D]) -> Option<(Point2D, Point2D)> {
     if points.is_empty() {

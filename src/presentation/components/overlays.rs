@@ -8,11 +8,11 @@
 
 use egui::{Color32, Context, Rounding, Stroke};
 
-use crate::application::ports::{GridUnit, ViewState};
+use crate::application::ports::{GlobalUnits, GridUnit, ParameterMode, ViewState};
 use crate::presentation::layout::{TOOLBAR_BOTTOM, TOOLBAR_HEIGHT};
 use crate::presentation::theme::ACCENT;
 
-use super::super::ui::RulerMeasurement;
+use super::super::ui::{HoverInfo, RulerMeasurement};
 
 /// Render the scale bar overlay in the bottom-left corner.
 /// `left_offset` shifts the bar right (e.g., when gradient panel is visible).
@@ -276,5 +276,87 @@ pub fn show_grid_labels(
             );
         }
         y += major_spacing;
+    }
+}
+
+/// Render a hover tooltip showing vector parameters near the cursor.
+pub fn show_hover_tooltip(
+    ctx: &Context,
+    info: &HoverInfo,
+    units: &GlobalUnits,
+) {
+    let painter = ctx.layer_painter(egui::LayerId::new(
+        egui::Order::Tooltip,
+        egui::Id::new("hover_tooltip"),
+    ));
+
+    let font = egui::FontId::proportional(11.5);
+    let label_color = Color32::from_rgb(80, 80, 80);
+    let value_color = Color32::from_rgb(30, 30, 30);
+    let bg_color = Color32::from_rgba_premultiplied(255, 255, 255, 230);
+    let border_color = Color32::from_rgb(180, 180, 180);
+
+    let fmt = |val: Option<f32>, mode: ParameterMode| -> String {
+        match val {
+            Some(v) => {
+                let converted = units.convert_param(mode, v);
+                if converted.abs() >= 100.0 {
+                    format!("{:.0}", converted)
+                } else if converted.abs() >= 1.0 {
+                    format!("{:.1}", converted)
+                } else {
+                    format!("{:.2}", converted)
+                }
+            }
+            None => "\u{2014}".to_string(), // em-dash
+        }
+    };
+
+    let lines = [
+        ("Power", fmt(info.power, ParameterMode::Power), units.param_suffix(ParameterMode::Power)),
+        ("Speed", fmt(info.speed, ParameterMode::Speed), units.param_suffix(ParameterMode::Speed)),
+        ("Wait", fmt(info.wait_time, ParameterMode::WaitTime), units.param_suffix(ParameterMode::WaitTime)),
+    ];
+
+    // Measure text to compute tooltip rectangle
+    let line_height = 15.0;
+    let pad_x = 8.0;
+    let pad_y = 6.0;
+    let row_count = lines.len() as f32;
+    let tooltip_h = row_count * line_height + pad_y * 2.0;
+
+    // Estimate width from longest line
+    let max_text_w = lines.iter().map(|(label, val, suffix)| {
+        let text = format!("{}:  {}{}", label, val, suffix);
+        painter.layout_no_wrap(text, font.clone(), value_color).size().x
+    }).fold(0.0_f32, f32::max);
+    let tooltip_w = max_text_w + pad_x * 2.0;
+
+    // Position: offset from cursor, clamped to screen
+    let screen = ctx.screen_rect();
+    let offset_x = 16.0;
+    let offset_y = 16.0;
+    let mut x = info.screen_pos.0 + offset_x;
+    let mut y = info.screen_pos.1 + offset_y;
+    if x + tooltip_w > screen.right() - 4.0 {
+        x = info.screen_pos.0 - tooltip_w - 8.0;
+    }
+    if y + tooltip_h > screen.bottom() - 4.0 {
+        y = info.screen_pos.1 - tooltip_h - 8.0;
+    }
+
+    let rect = egui::Rect::from_min_size(egui::pos2(x, y), egui::vec2(tooltip_w, tooltip_h));
+    painter.rect_filled(rect, Rounding::same(4.0), bg_color);
+    painter.rect_stroke(rect, Rounding::same(4.0), Stroke::new(1.0, border_color));
+
+    for (i, (label, val, suffix)) in lines.iter().enumerate() {
+        let ly = y + pad_y + i as f32 * line_height;
+        painter.text(
+            egui::pos2(x + pad_x, ly),
+            egui::Align2::LEFT_TOP,
+            format!("{}:  {}{}", label, val, suffix),
+            font.clone(),
+            if val == "\u{2014}" { label_color } else { value_color },
+        );
     }
 }

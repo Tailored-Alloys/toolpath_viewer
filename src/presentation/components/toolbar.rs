@@ -28,6 +28,7 @@ pub fn show_toolbar(
     show_arrows: &mut bool,
     show_wait_markers: &mut bool,
     show_scale_bar: &mut bool,
+    show_vector_view: &mut bool,
     param_mode: &mut Option<ParameterMode>,
     show_file_info: &mut bool,
     show_controls: &mut bool,
@@ -89,6 +90,15 @@ pub fn show_toolbar(
                 );
                 let icon_scale = &LucideIcon::RulerDimensionLine.unicode().to_string();
                 toolbar_toggle(ui, icon_scale, show_scale_bar, "Toggle Scale Bar (V)");
+                toolbar_toggle_image(
+                    ui,
+                    egui::ImageSource::Bytes {
+                        uri: "bytes://hatch-time.svg".into(),
+                        bytes: egui::load::Bytes::Static(include_bytes!("../assets/icons/hatch-time.svg")),
+                    },
+                    show_vector_view,
+                    "Toggle Vector View (N)",
+                );
 
                 ui.add_space(8.0);
                 ui.separator();
@@ -102,6 +112,7 @@ pub fn show_toolbar(
                     (None, "None", "No parameter coloring (1)"),
                     (Some(ParameterMode::Power), "Power", "Color by laser power (2)"),
                     (Some(ParameterMode::Speed), "Speed", "Color by scan speed (3)"),
+                    (Some(ParameterMode::WaitTime), "Wait", "Color by wait time (4)"),
                 ];
                 for (mode, label, tip) in &modes {
                     if toolbar_mode_btn(ui, label, *param_mode == *mode, tip) {

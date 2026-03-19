@@ -58,6 +58,8 @@ pub struct DisplayOptions {
     pub background_color: Color,
     /// Line width multiplier
     pub line_width: f32,
+    /// Maximum vector index to render (None = all vectors, Some(n) = 0..=n)
+    pub max_vector_index: Option<usize>,
 }
 
 impl Default for DisplayOptions {
@@ -78,6 +80,7 @@ impl Default for DisplayOptions {
             grid_unit: GridUnit::Millimeters,
             background_color: Color::from_hex("#FAFAFA").unwrap_or(Color::WHITE),
             line_width: 1.5,
+            max_vector_index: None,
         }
     }
 }

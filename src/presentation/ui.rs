@@ -95,6 +95,19 @@ pub enum SnapshotFormat {
     Svg,
 }
 
+/// Hover information for the vector under the cursor
+#[derive(Debug, Clone)]
+pub struct HoverInfo {
+    /// Laser power in file-native units (watts)
+    pub power: Option<f32>,
+    /// Processing speed in file-native units (mm/s)
+    pub speed: Option<f32>,
+    /// Wait time in file-native units (microseconds)
+    pub wait_time: Option<f32>,
+    /// Screen position for tooltip placement
+    pub screen_pos: (f32, f32),
+}
+
 /// Global parameter ranges computed from the entire file
 #[derive(Debug, Clone, Default)]
 pub struct ParamRanges {
@@ -134,6 +147,10 @@ pub struct UiOutput {
     pub zoom_out_requested: bool,
     /// Fit view button clicked
     pub fit_view_requested: bool,
+    /// Whether vector-by-vector view is enabled
+    pub vector_view_enabled: bool,
+    /// Current vector index (0-based) when vector view is active
+    pub vector_index: usize,
 }
 
 /// Vector count info for display
@@ -198,8 +215,14 @@ pub struct UiState {
     pub tool_state_view_transform: Option<(f32, f32, crate::application::ports::ViewState)>,
     /// File currently being loaded in a background thread (None = idle)
     pub loading_file: Option<String>,
-    /// Splash screen start time (Some = visible, None = dismissed)
-    pub splash_start: Option<std::time::Instant>,
+    /// Hover information for vector tooltip
+    pub hover_info: Option<HoverInfo>,
+    /// Whether vector-by-vector view mode is enabled
+    pub vector_view_enabled: bool,
+    /// Current vector index within the layer
+    pub current_vector_index: usize,
+    /// Total vectors in the current layer
+    pub total_vectors_in_layer: usize,
 }
 
 impl Default for UiState {
@@ -227,7 +250,10 @@ impl Default for UiState {
             tool_state_zoom: 1.0,
             tool_state_view_transform: None,
             loading_file: None,
-            splash_start: Some(std::time::Instant::now()),
+            hover_info: None,
+            vector_view_enabled: false,
+            current_vector_index: 0,
+            total_vectors_in_layer: 0,
         }
     }
 }
@@ -250,6 +276,7 @@ impl UiRenderer {
         let ctx = Context::default();
         theme::setup_fonts(&ctx);
         theme::apply_light_theme(&ctx);
+        egui_extras::install_image_loaders(&ctx);
 
         let winit_state = EguiWinitState::new(
             ctx.clone(),
@@ -330,6 +357,7 @@ impl UiRenderer {
             show_file_info: self.state.show_file_info,
             show_controls: self.state.show_controls,
             show_grid: self.state.tool_state.show_grid,
+            vector_view_active: self.state.vector_view_enabled,
         };
         let regions = LayoutRegions::compute(screen, &flags);
 
@@ -341,6 +369,8 @@ impl UiRenderer {
         let mut snapshot_requested = false;
         let mut layer_changed = false;
         let mut new_layer = self.state.current_layer;
+        let mut vector_changed = false;
+        let mut new_vector = self.state.current_vector_index;
 
         // Run egui
         let full_output = self.ctx.run(raw_input, |ctx| {
@@ -353,6 +383,7 @@ impl UiRenderer {
                 &mut self.state.show_arrows,
                 &mut self.state.show_wait_markers,
                 &mut self.state.tool_state.show_scale_bar,
+                &mut self.state.vector_view_enabled,
                 &mut self.state.param_mode,
                 &mut self.state.show_file_info,
                 &mut self.state.show_controls,
@@ -392,6 +423,20 @@ impl UiRenderer {
                 if slider_out.layer_changed {
                     layer_changed = true;
                     new_layer = slider_out.new_layer;
+                }
+            }
+
+            // ── Vector slider ──
+            if let Some(ref vs_region) = regions.vector_slider {
+                let vs_out = components::show_vector_slider(
+                    ctx,
+                    vs_region,
+                    self.state.current_vector_index,
+                    self.state.total_vectors_in_layer,
+                );
+                if vs_out.vector_changed {
+                    vector_changed = true;
+                    new_vector = vs_out.new_vector;
                 }
             }
 
@@ -467,6 +512,11 @@ impl UiRenderer {
                 }
             }
 
+            // ── Hover tooltip ──
+            if let Some(ref hover) = self.state.hover_info {
+                components::show_hover_tooltip(ctx, hover, &self.state.global_units);
+            }
+
             // ── File info popup (rendered last for high z-order) ──
             if self.state.show_file_info {
                 components::show_file_info(ctx, &self.state.vector_counts);
@@ -504,15 +554,6 @@ impl UiRenderer {
                 );
             }
 
-            // ── Splash screen (auto-dismiss after 3 seconds) ──
-            if let Some(start) = self.state.splash_start {
-                if start.elapsed().as_secs_f32() >= 2.0 {
-                    self.state.splash_start = None;
-                } else if let Some(ref tex) = self.logo_texture {
-                    components::show_splash_popup(ctx, tex);
-                    ctx.request_repaint();
-                }
-            }
 
             // ── Loading overlay ──
             if let Some(ref file_name) = self.state.loading_file {
@@ -560,6 +601,11 @@ impl UiRenderer {
             self.state.current_layer = new_layer;
         }
 
+        // Update state if vector changed via slider
+        if vector_changed {
+            self.state.current_vector_index = new_vector;
+        }
+
         // Handle platform output
         self.winit_state
             .handle_platform_output(window, full_output.platform_output.clone());
@@ -597,6 +643,8 @@ impl UiRenderer {
             zoom_in_requested,
             zoom_out_requested,
             fit_view_requested,
+            vector_view_enabled: self.state.vector_view_enabled,
+            vector_index: self.state.current_vector_index,
         }
     }
 

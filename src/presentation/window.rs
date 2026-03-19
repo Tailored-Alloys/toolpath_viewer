@@ -140,7 +140,7 @@ pub fn create_window(
 
     // Set window icon from embedded PNG
     {
-        let icon_bytes = include_bytes!("assets/icon.png");
+        let icon_bytes = include_bytes!("assets/logo.png");
         if let Ok(img) = image::load_from_memory(icon_bytes) {
             let rgba = img.to_rgba8();
             let (w, h) = rgba.dimensions();

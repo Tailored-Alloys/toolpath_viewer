@@ -6,6 +6,7 @@
 
 pub mod toolbar;
 pub mod layer_slider;
+pub mod vector_slider;
 pub mod gradient_scale;
 pub mod tool_panel;
 pub mod overlays;
@@ -13,6 +14,7 @@ pub mod popups;
 
 pub use toolbar::*;
 pub use layer_slider::*;
+pub use vector_slider::*;
 pub use gradient_scale::*;
 pub use tool_panel::*;
 pub use overlays::*;

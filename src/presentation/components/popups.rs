@@ -109,38 +109,6 @@ pub fn show_file_info(ctx: &Context, vector_counts: &VectorCounts) {
     });
 }
 
-/// Render the splash screen popup with the app logo on a dark grey background.
-/// Dismisses on click or key press (handled by the caller).
-pub fn show_splash_popup(ctx: &Context, logo: &egui::TextureHandle) {
-    let screen = ctx.screen_rect();
-    let painter = ctx.layer_painter(egui::LayerId::new(
-        egui::Order::Tooltip,
-        egui::Id::new("splash_overlay"),
-    ));
-
-    // Dark grey backdrop covering the entire screen
-    painter.rect_filled(
-        screen,
-        Rounding::ZERO,
-        egui::Color32::from_rgb(50, 50, 50),
-    );
-
-    // Draw the logo centered, scaled to fit nicely
-    let logo_size = logo.size_vec2();
-    let max_dim = 300.0_f32;
-    let scale = (max_dim / logo_size.x.max(logo_size.y)).min(1.0);
-    let display_size = egui::vec2(logo_size.x * scale, logo_size.y * scale);
-    let center = screen.center();
-    let logo_rect = egui::Rect::from_center_size(center, display_size);
-    painter.image(
-        logo.id(),
-        logo_rect,
-        egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
-        egui::Color32::WHITE,
-    );
-
-}
-
 /// Render the controls popup window (keyboard shortcut reference).
 pub fn show_controls_popup(ctx: &Context) {
     egui::Window::new(
@@ -159,9 +127,9 @@ pub fn show_controls_popup(ctx: &Context) {
             ("Home / End", "First / Last layer"),
             ("Scroll Wheel", "Zoom in / out"),
             ("+ / -", "Zoom in / out"),
-            ("Left Drag", "Pan view"),
-            ("Right Drag", "Zoom to selection"),
-            ("Middle Click", "Add measurement point"),
+            ("Middle Drag", "Pan view"),
+            ("Left Drag", "Zoom to selection"),
+            ("Right Click", "Add measurement point"),
             ("R", "Reset view (fit to content)"),
             ("B", "Toggle boundaries"),
             ("C", "Toggle contours"),

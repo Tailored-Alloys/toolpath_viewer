@@ -275,7 +275,13 @@ impl GlRenderer {
         // Place arrows every `arrow_spacing` world-units along polylines
         let arrow_spacing = marker_size * 8.0;
 
-        for vector in &layer.vectors {
+        // Limit vectors when vector-by-vector view is active
+        let vector_limit = match options.max_vector_index {
+            Some(max_idx) => (max_idx + 1).min(layer.vectors.len()),
+            None => layer.vectors.len(),
+        };
+
+        for vector in &layer.vectors[..vector_limit] {
             // Determine color: parameter gradient when a mode is active, else type-based
             let color = if let Some(param_mode) = options.param_mode {
                 let param_value = match param_mode {

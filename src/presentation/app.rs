@@ -13,7 +13,8 @@ use crate::application::ports::{ConfigManager, FileLoader, ParameterMode, Render
 use crate::application::use_cases::{
     LoadToolpathUseCase, NavigateLayersUseCase, RenderViewUseCase, DisplayOption,
 };
-use crate::domain::entities::Toolpath;
+use crate::domain::entities::{Toolpath, VectorType};
+use crate::domain::services::find_nearest_vector;
 use crate::domain::value_objects::{Bounds2D, Color, Point2D};
 use crate::infrastructure::config::JsonConfigManager;
 use crate::infrastructure::file_adapters::IltLoader;
@@ -406,8 +407,8 @@ fn handle_event(
         AppEvent::MouseMove { x: _, y: _ } => {
             // Handle panning only when pointer is in viewport
             if pointer_in_viewport {
-                // Right-drag: selection zoom rectangle
-                if window.input_state.right_pressed {
+                // Left-drag: selection zoom rectangle
+                if window.input_state.left_pressed {
                     let mouse = &window.input_state.mouse_pos;
                     ui.state.tool_state.zoom_rect_end = Some(Point2D::new(mouse.x, mouse.y));
                     window.request_redraw();
@@ -425,13 +426,21 @@ fn handle_event(
                     ui.state.tool_state.ruler_end = Some(world);
                     window.request_redraw();
                 }
-                // Left-drag: pan view
-                else if window.input_state.left_pressed {
+                // Middle-drag: pan view
+                else if window.input_state.middle_pressed {
                     let delta = window.input_state.mouse_delta();
                     state.render.pan(delta.x, -delta.y);
                     state.needs_redraw = true;
+                    ui.state.hover_info = None;
                     window.request_redraw();
                 }
+                // Hover tooltip hit-test (no buttons pressed)
+                else {
+                    update_hover_info(state, ui, window);
+                    window.request_redraw();
+                }
+            } else {
+                ui.state.hover_info = None;
             }
         }
 
@@ -444,12 +453,12 @@ fn handle_event(
                 let mouse = &window.input_state.mouse_pos;
 
                 match button {
-                    // Right button: selection zoom
-                    MouseButton::Right if pressed => {
+                    // Left button: selection zoom
+                    MouseButton::Left if pressed => {
                         ui.state.tool_state.zoom_rect_start = Some(Point2D::new(mouse.x, mouse.y));
                         ui.state.tool_state.zoom_rect_end = Some(Point2D::new(mouse.x, mouse.y));
                     }
-                    MouseButton::Right if !pressed => {
+                    MouseButton::Left if !pressed => {
                         // Zoom selection release → zoom to rectangle
                         if let (Some(start), Some(end)) = (
                             ui.state.tool_state.zoom_rect_start.take(),
@@ -479,8 +488,8 @@ fn handle_event(
                             window.request_redraw();
                         }
                     }
-                    // Middle button click: add/remove measurement point
-                    MouseButton::Middle if pressed => {
+                    // Right button click: add/remove measurement point
+                    MouseButton::Right if pressed => {
                         let (width, height) = window.size();
                         let viewport_h = height as f32 - UI_TOOLBAR_HEIGHT;
                         let viewport_mouse_x = mouse.x;
@@ -765,6 +774,12 @@ fn handle_key_action(
             window.request_redraw();
         }
 
+        InputAction::ParamModeWaitTime => {
+            ui.state.param_mode = Some(ParameterMode::WaitTime);
+            state.needs_redraw = true;
+            window.request_redraw();
+        }
+
         InputAction::ToggleFileInfo => {
             ui.state.show_file_info = !ui.state.show_file_info;
             window.request_redraw();
@@ -773,6 +788,32 @@ fn handle_key_action(
         InputAction::ToggleControls => {
             ui.state.show_controls = !ui.state.show_controls;
             window.request_redraw();
+        }
+
+        InputAction::ToggleVectorView => {
+            ui.state.vector_view_enabled = !ui.state.vector_view_enabled;
+            if ui.state.vector_view_enabled {
+                // Reset to show all vectors
+                ui.state.current_vector_index = ui.state.total_vectors_in_layer.saturating_sub(1);
+            }
+            state.needs_redraw = true;
+            window.request_redraw();
+        }
+
+        InputAction::NextVector => {
+            if ui.state.vector_view_enabled && ui.state.current_vector_index + 1 < ui.state.total_vectors_in_layer {
+                ui.state.current_vector_index += 1;
+                state.needs_redraw = true;
+                window.request_redraw();
+            }
+        }
+
+        InputAction::PrevVector => {
+            if ui.state.vector_view_enabled && ui.state.current_vector_index > 0 {
+                ui.state.current_vector_index -= 1;
+                state.needs_redraw = true;
+                window.request_redraw();
+            }
         }
 
         InputAction::Quit => {
@@ -860,6 +901,11 @@ fn render_frame(
     }
 
     // Sync visibility toggles from UI to display options BEFORE rendering
+    let vector_view_changed = state.render.display_options.max_vector_index != if ui_output.vector_view_enabled {
+        Some(ui_output.vector_index)
+    } else {
+        None
+    };
     let toggles_changed =
         state.render.display_options.show_slices != ui_output.show_slices
         || state.render.display_options.show_contours != ui_output.show_contours
@@ -869,7 +915,8 @@ fn render_frame(
         || state.render.display_options.param_mode != ui_output.param_mode
         || state.render.display_options.param_filter_min != ui_output.param_filter_min
         || state.render.display_options.param_filter_max != ui_output.param_filter_max
-        || state.render.display_options.show_grid != ui_output.tool_state.show_grid;
+        || state.render.display_options.show_grid != ui_output.tool_state.show_grid
+        || vector_view_changed;
 
     state.render.display_options.show_slices = ui_output.show_slices;
     state.render.display_options.show_contours = ui_output.show_contours;
@@ -881,6 +928,11 @@ fn render_frame(
     state.render.display_options.param_filter_max = ui_output.param_filter_max;
     state.render.display_options.show_grid = ui_output.tool_state.show_grid;
     state.render.display_options.grid_unit = ui_output.global_units.length;
+    state.render.display_options.max_vector_index = if ui_output.vector_view_enabled {
+        Some(ui_output.vector_index)
+    } else {
+        None
+    };
 
     // 2. Restore GL state first (egui leaves scissor test enabled), then clear
     renderer.begin_frame()?;
@@ -927,6 +979,16 @@ fn render_frame(
                 }
             }
             ui.state.vector_counts = counts.clone();
+
+            // Update vector count for the vector slider
+            let layer_vec_count = layer.vector_count();
+            if ui.state.total_vectors_in_layer != layer_vec_count {
+                ui.state.total_vectors_in_layer = layer_vec_count;
+                // Reset vector index to show all vectors when layer changes
+                if layer_changed {
+                    ui.state.current_vector_index = layer_vec_count.saturating_sub(1);
+                }
+            }
 
             // Only log on layer/toggle changes to reduce spam
             if layer_changed || toggles_changed {
@@ -978,6 +1040,59 @@ fn render_frame(
     state.needs_redraw = false;
 
     Ok(())
+}
+
+/// Update hover tooltip info by hit-testing the nearest visible vector.
+fn update_hover_info(
+    state: &AppState,
+    ui: &mut UiRenderer,
+    window: &AppWindow,
+) {
+    let toolpath = match state.toolpath.as_ref() {
+        Some(t) => t,
+        None => { ui.state.hover_info = None; return; }
+    };
+    let layer = match state.navigation.get_current_layer(&toolpath.slice_stack) {
+        Some(l) => l,
+        None => { ui.state.hover_info = None; return; }
+    };
+
+    let mouse = &window.input_state.mouse_pos;
+    let (width, height) = window.size();
+    let viewport_h = height as f32 - UI_TOOLBAR_HEIGHT;
+    let viewport_w = width as f32;
+    let world = state.render.view_state.screen_to_world(
+        mouse.x, mouse.y - UI_TOOLBAR_HEIGHT, viewport_w, viewport_h,
+    );
+
+    // Build list of visible vector indices respecting current display options
+    let opts = &state.render.display_options;
+    let visible_indices: Vec<usize> = layer.vectors.iter().enumerate()
+        .filter(|(_, v)| match v.vector_type {
+            VectorType::Boundary => opts.show_slices,
+            VectorType::Contour | VectorType::BaseContour | VectorType::CoincidingContour => opts.show_contours,
+            VectorType::DepthContour => opts.show_depth_contours,
+            VectorType::Hatch => opts.show_hatches,
+            VectorType::Support | VectorType::Travel => true,
+        })
+        .map(|(i, _)| i)
+        .collect();
+
+    let threshold = 5.0 / state.render.view_state.zoom.max(0.001);
+    match find_nearest_vector(&world, layer, &visible_indices) {
+        Some(hit) if hit.distance <= threshold => {
+            let params = &layer.vectors[hit.vector_index].parameters;
+            ui.state.hover_info = Some(crate::presentation::HoverInfo {
+                power: params.power,
+                speed: params.speed,
+                wait_time: params.wait_time,
+                screen_pos: (mouse.x, mouse.y),
+            });
+        }
+        _ => {
+            ui.state.hover_info = None;
+        }
+    }
 }
 
 /// Update the window title with layer info

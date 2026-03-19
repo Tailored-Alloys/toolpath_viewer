@@ -73,6 +73,8 @@ pub struct VisibilityFlags {
     pub show_controls: bool,
     /// Whether the grid is enabled (affects grid label overlay)
     pub show_grid: bool,
+    /// Whether vector-by-vector view is active (controls vector slider visibility)
+    pub vector_view_active: bool,
 }
 
 // ── Layout Regions ───────────────────────────────────────────────────────
@@ -97,6 +99,9 @@ pub struct LayoutRegions {
 
     /// Right layer slider — full height right side, below tool panel
     pub layer_slider: Option<LayerSliderRegion>,
+
+    /// Vector slider — right side, left of layer slider (visible when vector view active)
+    pub vector_slider: Option<VectorSliderRegion>,
 
     /// Left gradient scale — full height left side
     pub gradient_panel: Option<GradientRegion>,
@@ -143,6 +148,19 @@ pub struct GradientRegion {
     pub show_ticks: bool,
 }
 
+/// Vector slider positioning info
+#[derive(Debug, Clone)]
+pub struct VectorSliderRegion {
+    /// Position for the egui Area (top-left)
+    pub pos: egui::Pos2,
+    /// Available content height (inside frame, excluding padding)
+    pub content_height: f32,
+    /// Width of the panel
+    pub width: f32,
+    /// Whether to show the goto section
+    pub show_goto: bool,
+}
+
 impl LayoutRegions {
     /// Compute all layout regions from current screen size and visibility flags.
     ///
@@ -166,7 +184,12 @@ impl LayoutRegions {
 
         // ── Tool panel ──
         // Positioned top-right, left of the layer slider area
-        let tool_panel_right_offset = LAYER_SLIDER_WIDTH + PANEL_MARGIN + PANEL_GAP;
+        let right_panels_width = if flags.vector_view_active && flags.has_layers {
+            LAYER_SLIDER_WIDTH + PANEL_GAP + LAYER_SLIDER_WIDTH
+        } else {
+            LAYER_SLIDER_WIDTH
+        };
+        let tool_panel_right_offset = right_panels_width + PANEL_MARGIN + PANEL_GAP;
         let tool_panel_top = TOOLBAR_BOTTOM + PANEL_GAP;
         let tool_panel = ToolPanelRegion {
             anchor_pos: egui::pos2(screen.right() - tool_panel_right_offset, tool_panel_top),
@@ -184,6 +207,27 @@ impl LayoutRegions {
             Some(LayerSliderRegion {
                 pos: egui::pos2(
                     screen.right() - PANEL_MARGIN - LAYER_SLIDER_WIDTH,
+                    slider_top,
+                ),
+                content_height: content_h,
+                width: LAYER_SLIDER_WIDTH,
+                show_goto,
+            })
+        } else {
+            None
+        };
+
+        // ── Vector slider ──
+        let vector_slider = if flags.has_layers && flags.vector_view_active {
+            let slider_top = TOOLBAR_BOTTOM + PANEL_MARGIN;
+            let available_h = (screen_h - slider_top - BOTTOM_MARGIN).max(120.0);
+            let frame_overhead = 16.0;
+            let content_h = available_h - frame_overhead;
+            let show_goto = content_h > GOTO_SECTION_MIN_HEIGHT;
+
+            Some(VectorSliderRegion {
+                pos: egui::pos2(
+                    screen.right() - PANEL_MARGIN - LAYER_SLIDER_WIDTH - PANEL_GAP - LAYER_SLIDER_WIDTH,
                     slider_top,
                 ),
                 content_height: content_h,
@@ -238,6 +282,7 @@ impl LayoutRegions {
             compact_toolbar,
             tool_panel,
             layer_slider,
+            vector_slider,
             gradient_panel,
             scale_bar,
             viewport,
@@ -257,6 +302,10 @@ impl LayoutRegions {
         if let Some(ref slider) = self.layer_slider {
             let r = Rect::from_min_size(slider.pos, egui::vec2(slider.width, slider.content_height + 16.0));
             rects.push(("layer_slider", r));
+        }
+        if let Some(ref vs) = self.vector_slider {
+            let r = Rect::from_min_size(vs.pos, egui::vec2(vs.width, vs.content_height + 16.0));
+            rects.push(("vector_slider", r));
         }
         if let Some(ref grad) = self.gradient_panel {
             let r = Rect::from_min_size(grad.pos, egui::vec2(grad.width, grad.content_height + 16.0));

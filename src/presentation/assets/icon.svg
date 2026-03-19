@@ -1,0 +1,119 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<!-- Created with Inkscape (http://www.inkscape.org/) -->
+
+<svg
+   width="105.83333mm"
+   height="105.83334mm"
+   viewBox="0 0 105.83333 105.83334"
+   version="1.1"
+   id="svg1"
+   inkscape:version="1.4.3 (0d15f75, 2025-12-25)"
+   sodipodi:docname="toolpath_viewer_inscape.svg"
+   inkscape:export-filename="D:\Work_Local\Tailored_Alloys\toolpath_viewer\src\presentation\assets\logo.svg"
+   inkscape:export-xdpi="54.636726"
+   inkscape:export-ydpi="54.636726"
+   xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"
+   xmlns:sodipodi="http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd"
+   xmlns="http://www.w3.org/2000/svg"
+   xmlns:svg="http://www.w3.org/2000/svg">
+  <sodipodi:namedview
+     id="namedview1"
+     pagecolor="#ffffff"
+     bordercolor="#000000"
+     borderopacity="0.25"
+     inkscape:showpageshadow="2"
+     inkscape:pageopacity="0.0"
+     inkscape:pagecheckerboard="0"
+     inkscape:deskcolor="#d1d1d1"
+     inkscape:document-units="mm"
+     inkscape:zoom="0.36756309"
+     inkscape:cx="179.56101"
+     inkscape:cy="-398.57103"
+     inkscape:window-width="1261"
+     inkscape:window-height="1041"
+     inkscape:window-x="643"
+     inkscape:window-y="0"
+     inkscape:window-maximized="0"
+     inkscape:current-layer="layer1"
+     showgrid="true">
+    <inkscape:grid
+       id="grid1"
+       units="mm"
+       originx="100"
+       originy="129.99998"
+       spacingx="0.99999998"
+       spacingy="1"
+       empcolor="#0099e5"
+       empopacity="0.30196078"
+       color="#0099e5"
+       opacity="0.14901961"
+       empspacing="5"
+       enabled="true"
+       visible="true" />
+    <inkscape:page
+       x="-2.2446239e-21"
+       y="0"
+       width="105.83333"
+       height="105.83334"
+       id="page4"
+       margin="0"
+       bleed="0" />
+  </sodipodi:namedview>
+  <defs
+     id="defs1">
+    <inkscape:path-effect
+       effect="fillet_chamfer"
+       id="path-effect3"
+       is_visible="true"
+       lpeversion="1"
+       nodesatellites_param="F,0,0,1,0,0,0,1 @ F,0,0,1,0,7.8973671,0,1 @ F,0,0,1,0,6.6881965,0,1 @ F,0,0,1,0,0,0,1 @ F,0,0,1,0,9.729906,0,1 @ F,0,0,1,0,0,0,1"
+       radius="0"
+       unit="px"
+       method="auto"
+       mode="F"
+       chamfer_steps="1"
+       flexible="false"
+       use_knot_distance="true"
+       apply_no_radius="true"
+       apply_with_radius="true"
+       only_selected="false"
+       hide_knots="false" />
+    <marker
+       style="overflow:visible"
+       id="ArrowWide-1"
+       refX="0"
+       refY="0"
+       orient="auto-start-reverse"
+       inkscape:stockid="Wide arrow"
+       markerWidth="1"
+       markerHeight="1"
+       viewBox="0 0 1 1"
+       inkscape:isstock="true"
+       inkscape:collect="always"
+       preserveAspectRatio="xMidYMid">
+      <path
+         style="fill:none;stroke:context-stroke;stroke-width:1;stroke-linecap:butt"
+         d="M 3,-3 0,0 3,3"
+         transform="rotate(180,0.125,0)"
+         sodipodi:nodetypes="ccc"
+         id="path1-7" />
+    </marker>
+  </defs>
+  <g
+     inkscape:label="Layer 1"
+     inkscape:groupmode="layer"
+     id="layer1"
+     transform="translate(99.999993,130.00001)">
+    <path
+       style="fill:none;stroke:#6c98ad;stroke-width:7.9375;stroke-dasharray:none;stroke-dashoffset:0;stroke-opacity:1;marker-end:url(#ArrowWide-1)"
+       d="m 12.104098,69.999998 v 39.600482 a 7.9232041,7.9232041 45.093571 0 0 7.897325,7.92316 l 31.528351,0.10298 a 6.6977511,6.6977511 135.22804 0 0 6.719554,-6.66627 l 0.02186,-4.65653 0.02147,-6.573969 C 58.3102,94.356201 53.864984,90.156912 48.716625,88.679634 36.883334,85.284172 31.004408,76.444198 30.000001,75.439791"
+       id="path1"
+       sodipodi:nodetypes="cccccc"
+       inkscape:export-filename="path23.svg"
+       inkscape:export-xdpi="96"
+       inkscape:export-ydpi="96"
+       inkscape:path-effect="#path-effect3"
+       inkscape:original-d="m 12.104098,69.999998 v 47.497852 l 46.113837,0.15062 0.05325,-11.34465 0.05324,-16.303823 c -18.324424,0 -27.077962,-13.313744 -28.324424,-14.560206"
+       transform="matrix(1.9224862,0,0,2.0139587,-114.67375,-269.93262)" />
+  </g>
+</svg>
