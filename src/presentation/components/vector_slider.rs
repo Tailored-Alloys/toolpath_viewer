@@ -16,6 +16,7 @@ use crate::presentation::theme::*;
 pub struct VectorSliderOutput {
     pub vector_changed: bool,
     pub new_vector: usize,
+    pub playing_toggled: bool,
 }
 
 /// Render the vector slider panel.
@@ -24,6 +25,8 @@ pub fn show_vector_slider(
     region: &VectorSliderRegion,
     current_vector: usize,
     total_vectors: usize,
+    playing: bool,
+    playback_speed: &mut f32,
 ) -> VectorSliderOutput {
     let mut output = VectorSliderOutput::default();
 
@@ -36,12 +39,16 @@ pub fn show_vector_slider(
 
     // Fixed heights for controls
     let btn_h = 28.0;
+    let play_btn_h = 28.0;
+    let speed_h = 20.0;
     let goto_h = 42.0;
     let spacing = 8.0;
     let controls_h = btn_h
         + btn_h
+        + play_btn_h
+        + speed_h
         + (if region.show_goto { goto_h } else { 0.0 })
-        + spacing * 3.0;
+        + spacing * 5.0;
     let slider_h = (content_h - controls_h).max(60.0);
 
     egui::Area::new(egui::Id::new("vector_slider_area"))
@@ -205,9 +212,68 @@ pub fn show_vector_slider(
                         output.vector_changed = true;
                     }
 
+                    // Play/Pause button
+                    let play_btn_y = first_btn_y + btn_h / 2.0 + spacing + play_btn_h / 2.0;
+                    let play_icon = if playing {
+                        LucideIcon::Pause.unicode().to_string()
+                    } else {
+                        LucideIcon::Play.unicode().to_string()
+                    };
+                    let play_btn_color = if playing {
+                        Color32::from_rgb(245, 124, 0) // Deep orange when playing
+                    } else {
+                        Color32::from_rgb(255, 167, 38) // Orange
+                    };
+                    let play_btn_rect = egui::Rect::from_center_size(
+                        egui::pos2(center_x, play_btn_y),
+                        egui::vec2(44.0, play_btn_h),
+                    );
+                    let play_btn = egui::Button::new(
+                        RichText::new(&play_icon).size(16.0).color(Color32::WHITE),
+                    )
+                    .rounding(Rounding::same(6.0))
+                    .fill(play_btn_color);
+                    let play_tooltip = if playing { "Pause (Space)" } else { "Play (Space)" };
+                    if ui
+                        .put(play_btn_rect, play_btn)
+                        .on_hover_text(play_tooltip)
+                        .clicked()
+                    {
+                        output.playing_toggled = true;
+                    }
+
+                    // Speed selector
+                    let speed_y = play_btn_y + play_btn_h / 2.0 + spacing + speed_h / 2.0;
+                    let speed_opts: [f32; 4] = [0.5, 1.0, 2.0, 5.0];
+                    let speed_label = if *playback_speed == 0.5 {
+                        "½×".to_string()
+                    } else {
+                        format!("{}×", *playback_speed as u32)
+                    };
+                    let speed_btn_rect = egui::Rect::from_center_size(
+                        egui::pos2(center_x, speed_y),
+                        egui::vec2(44.0, speed_h),
+                    );
+                    let speed_btn = egui::Button::new(
+                        RichText::new(&speed_label).size(11.0).color(TEXT_PRIMARY),
+                    )
+                    .rounding(Rounding::same(4.0))
+                    .fill(Color32::from_rgb(240, 240, 240));
+                    if ui
+                        .put(speed_btn_rect, speed_btn)
+                        .on_hover_text("Playback speed")
+                        .clicked()
+                    {
+                        // Cycle to next speed
+                        let current_idx = speed_opts.iter()
+                            .position(|&s| (s - *playback_speed).abs() < 0.01)
+                            .unwrap_or(1);
+                        *playback_speed = speed_opts[(current_idx + 1) % speed_opts.len()];
+                    }
+
                     // Go to section (hidden on small windows)
                     if region.show_goto {
-                        let goto_label_y = first_btn_y + btn_h / 2.0 + spacing + 8.0;
+                        let goto_label_y = speed_y + speed_h / 2.0 + spacing + 8.0;
                         ui.painter().text(
                             egui::pos2(center_x, goto_label_y),
                             egui::Align2::CENTER_CENTER,

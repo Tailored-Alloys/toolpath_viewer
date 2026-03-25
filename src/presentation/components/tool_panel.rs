@@ -103,42 +103,14 @@ pub fn show_tool_panel(
                         ) {
                             output.fit_view_requested = true;
                         }
-                        // ── Zoom Selection ──
-                        let is_zoom_select = *tool_mode == ToolMode::ZoomSelect;
-                        if tool_btn(
-                            ui,
-                            &LucideIcon::Scan.unicode().to_string(),
-                            "Zoom Selection (Z)",
-                            is_zoom_select,
-                        ) {
-                            *tool_mode = if is_zoom_select {
-                                ToolMode::None
-                            } else {
-                                ToolMode::ZoomSelect
-                            };
-                        }
+                        // ── Zoom Selection & Ruler removed — now on mouse ──
+                        // Left-drag: zoom selection, Right-click: ruler
 
-                        // ── Separator ──
-                        ui.add(egui::Separator::default().vertical().spacing(4.0));
-
-                        // ── Ruler ──
-                        let is_ruler = *tool_mode == ToolMode::Ruler;
-                        if tool_btn(
-                            ui,
-                            &LucideIcon::Ruler.unicode().to_string(),
-                            "Ruler Tool (M)",
-                            is_ruler,
-                        ) {
-                            if is_ruler {
-                                *tool_mode = ToolMode::None;
-                                *ruler_start = None;
-                                *ruler_end = None;
-                            } else {
-                                *tool_mode = ToolMode::Ruler;
-                            }
-                        }
                         // ── Clear measurements ──
                         if !ruler_measurements.is_empty() {
+                            // ── Separator ──
+                            ui.add(egui::Separator::default().vertical().spacing(4.0));
+
                             let btn = egui::Button::new(
                                 RichText::new(
                                     &LucideIcon::X.unicode().to_string(),
@@ -157,7 +129,6 @@ pub fn show_tool_panel(
                                 ruler_measurements.clear();
                             }
                         }
-                        // ── Scale bar toggle removed — now in toolbar ──
 
                         // ── Separator ──
                         ui.add(egui::Separator::default().vertical().spacing(4.0));

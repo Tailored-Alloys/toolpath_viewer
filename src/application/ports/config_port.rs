@@ -68,7 +68,7 @@ impl Default for WindowConfig {
             width: 1280,
             height: 720,
             maximized: false,
-            title: "Toolpath Viewer".to_string(),
+            title: format!("Toolpath Viewer [{}]", crate::APP_VERSION),
         }
     }
 }

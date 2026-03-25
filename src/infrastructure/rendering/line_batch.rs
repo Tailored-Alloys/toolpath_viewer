@@ -158,6 +158,18 @@ impl LineBatch {
         self.dirty = true;
     }
 
+    /// Add a single line segment with per-vertex colors (gradient)
+    pub fn add_line_gradient(&mut self, p1: &Point2D, c1: &Color, p2: &Point2D, c2: &Color) {
+        let start = self.vertices.len();
+
+        self.vertices.push(LineVertex::from_point(p1, c1));
+        self.vertices.push(LineVertex::from_point(p2, c2));
+
+        self.segments.push(LineSegment { start, count: 2 });
+
+        self.dirty = true;
+    }
+
     /// Set line width
     pub fn set_line_width(&mut self, width: f32) {
         self.line_width = width;
