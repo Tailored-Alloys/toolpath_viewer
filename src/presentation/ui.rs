@@ -1,21 +1,112 @@
 //! UI Module - egui integration for toolbar and floating panels
 //!
-//! Provides an overlay UI with:
-//! - Top toolbar with visibility toggles, parameter mode, file info, controls
-//! - Right floating vertical layer slider with jump-to input
-//! - Left floating vertical gradient scale with filtering (when param mode active)
+//! Thin orchestrator that delegates to specialized components in `components/`.
+//! Each component renders within layout regions computed by `layout.rs`.
+//! Theme constants and shared helpers live in `theme.rs`.
 
-use egui::{Context, Slider, DragValue, RichText, ViewportId, Align2, Color32, Rounding, Stroke, Vec2};
+use egui::{Context, ViewportId};
 use egui_glow::Painter;
 use egui_winit::EventResponse;
 use egui_winit::State as EguiWinitState;
 use std::sync::Arc;
 
-use crate::application::ports::ParameterMode;
-use crate::domain::value_objects::Color;
+use crate::application::ports::{GlobalUnits, ParameterMode};
 
-/// Height of the top toolbar in logical pixels
-pub const TOOLBAR_HEIGHT: f32 = 52.0;
+use super::layout::{LayoutRegions, VisibilityFlags, TOOLBAR_HEIGHT};
+use super::theme;
+use super::components;
+
+// ── Tool Mode types ───────────────────────────────────────────────────────
+
+/// Active tool mode
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToolMode {
+    /// Default mode — pan/zoom with existing controls
+    None,
+    /// Shift+drag rectangle zoom-to-fit
+    ZoomSelect,
+    /// Click-to-click distance measurement
+    Ruler,
+}
+
+impl Default for ToolMode {
+    fn default() -> Self {
+        ToolMode::None
+    }
+}
+
+/// A persistent ruler measurement drawn on the viewport
+#[derive(Debug, Clone)]
+pub struct RulerMeasurement {
+    /// Start point in world coordinates
+    pub start: crate::domain::value_objects::Point2D,
+    /// End point in world coordinates
+    pub end: crate::domain::value_objects::Point2D,
+    /// Measured distance in mm
+    pub distance_mm: f32,
+}
+
+/// Tool state managed by the UI and consumed by the app
+#[derive(Debug, Clone)]
+pub struct ToolState {
+    /// Currently active tool mode
+    pub active_mode: ToolMode,
+    /// Zoom selection rectangle start (screen coords, viewport-relative)
+    pub zoom_rect_start: Option<crate::domain::value_objects::Point2D>,
+    /// Zoom selection rectangle end (screen coords, viewport-relative)
+    pub zoom_rect_end: Option<crate::domain::value_objects::Point2D>,
+    /// Ruler measurement start (world coords)
+    pub ruler_start: Option<crate::domain::value_objects::Point2D>,
+    /// Ruler measurement end (world coords, live preview while placing)
+    pub ruler_end: Option<crate::domain::value_objects::Point2D>,
+    /// Persistent ruler measurements
+    pub ruler_measurements: Vec<RulerMeasurement>,
+    /// Show background grid
+    pub show_grid: bool,
+    /// Show scale bar
+    pub show_scale_bar: bool,
+    /// Snapshot requested this frame
+    pub snapshot_requested: bool,
+    /// Snapshot format requested
+    pub snapshot_format: SnapshotFormat,
+}
+
+impl Default for ToolState {
+    fn default() -> Self {
+        Self {
+            active_mode: ToolMode::None,
+            zoom_rect_start: None,
+            zoom_rect_end: None,
+            ruler_start: None,
+            ruler_end: None,
+            ruler_measurements: Vec::new(),
+            show_grid: true,
+            show_scale_bar: true,
+            snapshot_requested: false,
+            snapshot_format: SnapshotFormat::Png,
+        }
+    }
+}
+
+/// Snapshot export format
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SnapshotFormat {
+    Png,
+    Svg,
+}
+
+/// Hover information for the vector under the cursor
+#[derive(Debug, Clone)]
+pub struct HoverInfo {
+    /// Laser power in file-native units (watts)
+    pub power: Option<f32>,
+    /// Processing speed in file-native units (mm/s)
+    pub speed: Option<f32>,
+    /// Wait time in file-native units (microseconds)
+    pub wait_time: Option<f32>,
+    /// Screen position for tooltip placement
+    pub screen_pos: (f32, f32),
+}
 
 /// Global parameter ranges computed from the entire file
 #[derive(Debug, Clone, Default)]
@@ -35,7 +126,8 @@ pub struct UiOutput {
     pub show_contours: bool,
     pub show_hatches: bool,
     pub show_arrows: bool,
-    pub show_power_markers: bool,
+    /// Show wait time markers
+    pub show_wait_markers: bool,
     /// Parameter visualization mode
     pub param_mode: Option<ParameterMode>,
     /// Parameter filter min/max
@@ -43,6 +135,22 @@ pub struct UiOutput {
     pub param_filter_max: f32,
     /// Whether UI wants to repaint (hover, drag, etc.)
     pub needs_repaint: bool,
+    /// User requested to open a file via load button
+    pub open_file_requested: bool,
+    /// Tool state output
+    pub tool_state: ToolState,
+    /// Global unit settings
+    pub global_units: GlobalUnits,
+    /// Zoom in button clicked
+    pub zoom_in_requested: bool,
+    /// Zoom out button clicked
+    pub zoom_out_requested: bool,
+    /// Fit view button clicked
+    pub fit_view_requested: bool,
+    /// Whether vector-by-vector view is enabled
+    pub vector_view_enabled: bool,
+    /// Current vector index (0-based) when vector view is active
+    pub vector_index: usize,
 }
 
 /// Vector count info for display
@@ -77,7 +185,8 @@ pub struct UiState {
     pub show_contours: bool,
     pub show_hatches: bool,
     pub show_arrows: bool,
-    pub show_power_markers: bool,
+    /// Show wait time markers
+    pub show_wait_markers: bool,
     /// Vector counts for current layer
     pub vector_counts: VectorCounts,
     /// Parameter visualization mode
@@ -96,6 +205,24 @@ pub struct UiState {
     pub show_controls: bool,
     /// Layer jump input value (text field for direct entry)
     pub layer_jump_value: String,
+    /// Tool state
+    pub tool_state: ToolState,
+    /// Global unit settings
+    pub global_units: GlobalUnits,
+    /// Cached zoom level for scale bar (updated from app each frame)
+    pub tool_state_zoom: f32,
+    /// Cached view transform for coordinate conversion (viewport_w, viewport_h, ViewState)
+    pub tool_state_view_transform: Option<(f32, f32, crate::application::ports::ViewState)>,
+    /// File currently being loaded in a background thread (None = idle)
+    pub loading_file: Option<String>,
+    /// Hover information for vector tooltip
+    pub hover_info: Option<HoverInfo>,
+    /// Whether vector-by-vector view mode is enabled
+    pub vector_view_enabled: bool,
+    /// Current vector index within the layer
+    pub current_vector_index: usize,
+    /// Total vectors in the current layer
+    pub total_vectors_in_layer: usize,
 }
 
 impl Default for UiState {
@@ -108,7 +235,7 @@ impl Default for UiState {
             show_contours: true,
             show_hatches: true,
             show_arrows: false,
-            show_power_markers: false,
+            show_wait_markers: false,
             vector_counts: VectorCounts::default(),
             param_mode: None,
             param_filter_min: 0.0,
@@ -118,21 +245,18 @@ impl Default for UiState {
             show_file_info: false,
             show_controls: false,
             layer_jump_value: String::new(),
+            tool_state: ToolState::default(),
+            global_units: GlobalUnits::default(),
+            tool_state_zoom: 1.0,
+            tool_state_view_transform: None,
+            loading_file: None,
+            hover_info: None,
+            vector_view_enabled: false,
+            current_vector_index: 0,
+            total_vectors_in_layer: 0,
         }
     }
 }
-
-// ── Theme colors ──────────────────────────────────────────────────────────
-const TOOLBAR_BG: Color32 = Color32::from_rgb(245, 245, 245);           // #F5F5F5
-const TOOLBAR_BORDER: Color32 = Color32::from_rgb(200, 200, 200);       // #C8C8C8
-const ACCENT: Color32 = Color32::from_rgb(25, 118, 210);                // #1976D2
-const ACCENT_LIGHT: Color32 = Color32::from_rgb(187, 222, 251);         // #BBDEFB
-const TOGGLE_ACTIVE_BG: Color32 = Color32::from_rgb(200, 230, 255);     // light blue
-const TOGGLE_INACTIVE_BG: Color32 = Color32::from_rgb(230, 230, 230);   // #E6E6E6
-const TEXT_PRIMARY: Color32 = Color32::from_rgb(33, 33, 33);            // #212121
-const TEXT_SECONDARY: Color32 = Color32::from_rgb(97, 97, 97);          // #616161
-const PANEL_BG: Color32 = Color32::from_rgb(255, 255, 255);             // white
-const PANEL_SHADOW: Color32 = Color32::from_rgba_premultiplied(0, 0, 0, 40);
 
 /// Main UI renderer using egui
 pub struct UiRenderer {
@@ -142,75 +266,17 @@ pub struct UiRenderer {
     pub state: UiState,
     /// Deferred egui output for split run/paint cycle
     pending_output: Option<egui::FullOutput>,
-}
-
-/// Apply the light theme to the egui context
-fn apply_light_theme(ctx: &Context) {
-    let mut visuals = egui::Visuals::light();
-    visuals.panel_fill = TOOLBAR_BG;
-    visuals.window_fill = PANEL_BG;
-    visuals.window_rounding = Rounding::same(8.0);
-    visuals.window_shadow = egui::epaint::Shadow {
-        offset: egui::vec2(0.0, 2.0),
-        blur: 8.0,
-        spread: 0.0,
-        color: PANEL_SHADOW,
-    };
-    visuals.widgets.inactive.bg_fill = TOGGLE_INACTIVE_BG;
-    visuals.widgets.inactive.fg_stroke = Stroke::new(1.0, TEXT_PRIMARY);
-    visuals.widgets.inactive.rounding = Rounding::same(6.0);
-    visuals.widgets.hovered.bg_fill = ACCENT_LIGHT;
-    visuals.widgets.hovered.fg_stroke = Stroke::new(1.0, ACCENT);
-    visuals.widgets.hovered.rounding = Rounding::same(6.0);
-    visuals.widgets.active.bg_fill = ACCENT;
-    visuals.widgets.active.fg_stroke = Stroke::new(1.0, Color32::WHITE);
-    visuals.widgets.active.rounding = Rounding::same(6.0);
-    visuals.widgets.noninteractive.fg_stroke = Stroke::new(1.0, TEXT_PRIMARY);
-    visuals.selection.bg_fill = ACCENT;
-    visuals.selection.stroke = Stroke::new(1.0, Color32::WHITE);
-    ctx.set_visuals(visuals);
-
-    let mut style = (*ctx.style()).clone();
-    style.spacing.item_spacing = egui::vec2(8.0, 6.0);
-    style.spacing.button_padding = egui::vec2(10.0, 6.0);
-    style.spacing.window_margin = egui::Margin::same(12.0);
-    // Disable all animations to prevent slide-in / fade effects
-    style.animation_time = 0.0;
-    ctx.set_style(style);
-}
-
-/// Helper: draw a toolbar toggle button (icon + active state)
-fn toolbar_toggle(ui: &mut egui::Ui, icon: &str, active: &mut bool, tooltip: &str) -> bool {
-    let fill = if *active { TOGGLE_ACTIVE_BG } else { Color32::TRANSPARENT };
-    let text_color = if *active { ACCENT } else { TEXT_PRIMARY };
-    let btn = egui::Button::new(RichText::new(icon).size(20.0).color(text_color))
-        .fill(fill)
-        .rounding(Rounding::same(6.0))
-        .min_size(Vec2::new(36.0, 36.0));
-    let response = ui.add(btn).on_hover_text(tooltip);
-    if response.clicked() {
-        *active = !*active;
-    }
-    response.clicked()
-}
-
-/// Helper: draw a toolbar mode button (for parameter mode selection)
-fn toolbar_mode_btn(ui: &mut egui::Ui, label: &str, is_selected: bool, tooltip: &str) -> bool {
-    let fill = if is_selected { ACCENT } else { TOGGLE_INACTIVE_BG };
-    let text_color = if is_selected { Color32::WHITE } else { TEXT_PRIMARY };
-    let btn = egui::Button::new(RichText::new(label).size(12.0).color(text_color))
-        .fill(fill)
-        .rounding(Rounding::same(6.0))
-        .min_size(Vec2::new(0.0, 30.0));
-    let response = ui.add(btn).on_hover_text(tooltip);
-    response.clicked()
+    /// Logo texture for the toolbar
+    logo_texture: Option<egui::TextureHandle>,
 }
 
 impl UiRenderer {
     /// Create a new UI renderer
     pub fn new(gl: Arc<glow::Context>, window: &winit::window::Window) -> Self {
         let ctx = Context::default();
-        apply_light_theme(&ctx);
+        theme::setup_fonts(&ctx);
+        theme::apply_light_theme(&ctx);
+        egui_extras::install_image_loaders(&ctx);
 
         let winit_state = EguiWinitState::new(
             ctx.clone(),
@@ -222,12 +288,25 @@ impl UiRenderer {
         let painter = Painter::new(gl, "", None)
             .expect("Failed to create egui painter");
 
+        // Load logo texture from embedded PNG
+        let logo_texture = {
+            let logo_bytes = include_bytes!("assets/logo.png");
+            image::load_from_memory(logo_bytes).ok().map(|img| {
+                let rgba = img.to_rgba8();
+                let size = [rgba.width() as usize, rgba.height() as usize];
+                let pixels = rgba.into_raw();
+                let color_image = egui::ColorImage::from_rgba_unmultiplied(size, &pixels);
+                ctx.load_texture("logo", color_image, egui::TextureOptions::LINEAR)
+            })
+        };
+
         Self {
             ctx,
             winit_state,
             painter,
             state: UiState::default(),
             pending_output: None,
+            logo_texture,
         }
     }
 
@@ -236,6 +315,12 @@ impl UiRenderer {
         self.state.current_layer = current;
         self.state.total_layers = total;
         self.state.current_z = z;
+    }
+
+    /// Update the cached view transform so overlays (ruler, grid labels, scale bar) can convert coords
+    pub fn update_view_transform(&mut self, view: &crate::application::ports::ViewState, viewport_width: f32, viewport_height: f32) {
+        self.state.tool_state_zoom = view.zoom;
+        self.state.tool_state_view_transform = Some((viewport_width, viewport_height, view.clone()));
     }
 
     /// Handle window event, forwards to egui
@@ -260,94 +345,56 @@ impl UiRenderer {
     /// Run egui logic (UI layout, handle interactions), returning output.
     /// Call `paint()` afterwards to draw the egui overlay on top of GL content.
     pub fn run_ui(&mut self, window: &winit::window::Window) -> UiOutput {
-        let mut layer_changed = false;
-        let mut new_layer = self.state.current_layer;
-
         // Get raw input from winit state
         let raw_input = self.winit_state.take_egui_input(window);
 
+        // Compute layout regions from current screen size and visibility flags
+        let screen = self.ctx.input(|i| i.screen_rect());
+        let flags = VisibilityFlags {
+            has_layers: self.state.total_layers > 0,
+            show_gradient: self.state.param_mode.is_some(),
+            show_scale_bar: self.state.tool_state.show_scale_bar,
+            show_file_info: self.state.show_file_info,
+            show_controls: self.state.show_controls,
+            show_grid: self.state.tool_state.show_grid,
+            vector_view_active: self.state.vector_view_enabled,
+        };
+        let regions = LayoutRegions::compute(screen, &flags);
+
+        // Track component outputs
+        let mut open_file_requested = false;
+        let mut zoom_in_requested = false;
+        let mut zoom_out_requested = false;
+        let mut fit_view_requested = false;
+        let mut snapshot_requested = false;
+        let mut layer_changed = false;
+        let mut new_layer = self.state.current_layer;
+        let mut vector_changed = false;
+        let mut new_vector = self.state.current_vector_index;
+
         // Run egui
         let full_output = self.ctx.run(raw_input, |ctx| {
-            // ━━━━━━━━━━━━━━━━━━━━━━━ TOP TOOLBAR ━━━━━━━━━━━━━━━━━━━━━━━
-            egui::TopBottomPanel::top("toolbar")
-                .exact_height(TOOLBAR_HEIGHT)
-                .frame(egui::Frame::none()
-                    .fill(TOOLBAR_BG)
-                    .stroke(Stroke::new(1.0, TOOLBAR_BORDER))
-                    .inner_margin(egui::Margin::symmetric(12.0, 8.0)))
-                .show(ctx, |ui| {
-                    ui.horizontal_centered(|ui| {
-                        // App title
-                        ui.label(RichText::new("Toolpath Viewer").size(16.0).strong().color(TEXT_PRIMARY));
+            // ── Toolbar ──
+            let toolbar_out = components::show_toolbar(
+                ctx,
+                regions.compact_toolbar,
+                &mut self.state.show_contours,
+                &mut self.state.show_hatches,
+                &mut self.state.show_arrows,
+                &mut self.state.show_wait_markers,
+                &mut self.state.tool_state.show_scale_bar,
+                &mut self.state.vector_view_enabled,
+                &mut self.state.param_mode,
+                &mut self.state.show_file_info,
+                &mut self.state.show_controls,
+                &mut self.state.global_units,
+                self.state.current_layer,
+                self.state.total_layers,
+                self.state.current_z,
+            );
+            open_file_requested = toolbar_out.open_file_requested;
 
-                        ui.add_space(16.0);
-                        ui.separator();
-                        ui.add_space(8.0);
-
-                        // ── Visibility toggles ──
-                        toolbar_toggle(ui, "🔲", &mut self.state.show_slices, "Toggle Boundaries (B)");
-                        toolbar_toggle(ui, "⭕", &mut self.state.show_contours, "Toggle Contours (C)");
-                        toolbar_toggle(ui, "▤", &mut self.state.show_hatches, "Toggle Hatches (H)");
-                        toolbar_toggle(ui, "➤", &mut self.state.show_arrows, "Toggle Direction Arrows (A)");
-                        toolbar_toggle(ui, "✱", &mut self.state.show_power_markers, "Toggle Power Markers");
-
-                        ui.add_space(8.0);
-                        ui.separator();
-                        ui.add_space(8.0);
-
-                        // ── Parameter mode selector ──
-                        ui.label(RichText::new("Color:").size(12.0).color(TEXT_SECONDARY));
-                        let modes = [
-                            (None, "None", "No parameter coloring"),
-                            (Some(ParameterMode::Power), "Power", "Color by laser power"),
-                            (Some(ParameterMode::Speed), "Speed", "Color by scan speed"),
-                            (Some(ParameterMode::WaitTime), "Wait", "Color by wait time"),
-                        ];
-                        for (mode, label, tip) in &modes {
-                            if toolbar_mode_btn(ui, label, self.state.param_mode == *mode, tip) {
-                                self.state.param_mode = *mode;
-                            }
-                        }
-
-                        ui.add_space(8.0);
-                        ui.separator();
-                        ui.add_space(8.0);
-
-                        // ── File Info button ──
-                        let info_btn = egui::Button::new(RichText::new("📋 Info").size(13.0).color(TEXT_PRIMARY))
-                            .fill(if self.state.show_file_info { TOGGLE_ACTIVE_BG } else { Color32::TRANSPARENT })
-                            .rounding(Rounding::same(6.0))
-                            .min_size(Vec2::new(0.0, 30.0));
-                        if ui.add(info_btn).on_hover_text("Layer info & parameters").clicked() {
-                            self.state.show_file_info = !self.state.show_file_info;
-                        }
-
-                        // ── Controls button ──
-                        let ctrl_btn = egui::Button::new(RichText::new("⌨ Controls").size(13.0).color(TEXT_PRIMARY))
-                            .fill(if self.state.show_controls { TOGGLE_ACTIVE_BG } else { Color32::TRANSPARENT })
-                            .rounding(Rounding::same(6.0))
-                            .min_size(Vec2::new(0.0, 30.0));
-                        if ui.add(ctrl_btn).on_hover_text("Keyboard shortcuts").clicked() {
-                            self.state.show_controls = !self.state.show_controls;
-                        }
-
-                        // ── Layer info on the right side ──
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if self.state.total_layers > 0 {
-                                ui.label(RichText::new(format!(
-                                    "Layer {}/{}  •  Z = {:.3} mm",
-                                    self.state.current_layer + 1,
-                                    self.state.total_layers,
-                                    self.state.current_z
-                                )).size(12.0).color(TEXT_SECONDARY));
-                            } else {
-                                ui.label(RichText::new("No file loaded — drop an ILT file").size(12.0).color(TEXT_SECONDARY));
-                            }
-                        });
-                    });
-                });
-
-            // ━━━━━━━━━━━━━━━━ RESET PARAM FILTER ON MODE CHANGE ━━━━━━━━━━━━━━━━
+            // ── Reset param filter on mode change ──
             if self.state.param_mode != self.state.prev_param_mode {
                 let range = match self.state.param_mode {
                     Some(ParameterMode::Power) => self.state.param_ranges.power,
@@ -365,326 +412,187 @@ impl UiRenderer {
                 self.state.prev_param_mode = self.state.param_mode;
             }
 
-            // ━━━━━━━━━━━━━━━ RIGHT FLOATING LAYER SLIDER ━━━━━━━━━━━━━━━━
-            if self.state.total_layers > 0 {
-                let screen = ctx.screen_rect();
-                let slider_panel_w = 64.0;
-                let slider_margin = 12.0;
-                let slider_top = TOOLBAR_HEIGHT + 16.0;
-                let slider_bottom_margin = 16.0;
-                let panel_h = (screen.height() - slider_top - slider_bottom_margin).max(220.0);
-
-                egui::Area::new(egui::Id::new("layer_slider_area"))
-                    .anchor(Align2::RIGHT_TOP, egui::vec2(-slider_margin, slider_top))
-                    .order(egui::Order::Foreground)
-                    .interactable(true)
-                    .movable(false)
-                    .show(ctx, |ui| {
-                        egui::Frame::none()
-                            .fill(Color32::from_rgba_premultiplied(255, 255, 255, 230))
-                            .rounding(Rounding::same(10.0))
-                            .shadow(egui::epaint::Shadow {
-                                offset: egui::vec2(0.0, 2.0),
-                                blur: 8.0,
-                                spread: 0.0,
-                                color: PANEL_SHADOW,
-                            })
-                            .inner_margin(egui::Margin::symmetric(8.0, 12.0))
-                            .show(ui, |ui| {
-                                // Keep this panel strictly fixed-size so no child widget can expand it.
-                                ui.set_min_width(slider_panel_w);
-                                ui.set_max_width(slider_panel_w);
-
-                                let inner_h = panel_h - 24.0;
-                                ui.allocate_ui_with_layout(
-                                    egui::vec2(slider_panel_w, inner_h),
-                                    egui::Layout::top_down(egui::Align::Center),
-                                    |ui| {
-                                        let max_layer = self.state.total_layers.saturating_sub(1);
-                                        let slider_h = (inner_h - 120.0).max(100.0);
-
-                                        let first_btn = egui::Button::new(RichText::new("⏮").size(14.0))
-                                            .min_size(Vec2::new(36.0, 24.0))
-                                            .rounding(Rounding::same(4.0));
-                                        if ui.add(first_btn).on_hover_text("First layer (Home)").clicked() {
-                                            new_layer = 0;
-                                            layer_changed = true;
-                                        }
-
-                                        ui.add_space(4.0);
-
-                                        // Vertical slider (egui puts min at bottom, max at top)
-                                        let mut layer = self.state.current_layer;
-                                        let slider = Slider::new(&mut layer, 0..=max_layer)
-                                            .vertical()
-                                            .show_value(false);
-                                        let slider_response = ui.add_sized(egui::vec2(20.0, slider_h), slider);
-                                        if slider_response.changed() {
-                                            new_layer = layer;
-                                            layer_changed = true;
-                                        }
-
-                                        ui.add_space(4.0);
-
-                                        let last_btn = egui::Button::new(RichText::new("⏭").size(14.0))
-                                            .min_size(Vec2::new(36.0, 24.0))
-                                            .rounding(Rounding::same(4.0));
-                                        if ui.add(last_btn).on_hover_text("Last layer (End)").clicked() {
-                                            new_layer = max_layer;
-                                            layer_changed = true;
-                                        }
-
-                                        ui.add_space(8.0);
-
-                                        // Jump-to input
-                                        ui.label(RichText::new("Go to").size(10.0).color(TEXT_SECONDARY));
-                                        let mut jump_val = (self.state.current_layer + 1) as i64;
-                                        let dv = DragValue::new(&mut jump_val)
-                                            .clamp_range(1..=(self.state.total_layers as i64))
-                                            .speed(1.0);
-                                        if ui.add_sized(egui::vec2(40.0, 20.0), dv).changed() {
-                                            new_layer = (jump_val as usize)
-                                                .saturating_sub(1)
-                                                .min(self.state.total_layers.saturating_sub(1));
-                                            layer_changed = true;
-                                        }
-                                    },
-                                );
-                            });
-                    });
+            // ── Layer slider ──
+            if let Some(ref slider_region) = regions.layer_slider {
+                let slider_out = components::show_layer_slider(
+                    ctx,
+                    slider_region,
+                    self.state.current_layer,
+                    self.state.total_layers,
+                );
+                if slider_out.layer_changed {
+                    layer_changed = true;
+                    new_layer = slider_out.new_layer;
+                }
             }
 
-            // ━━━━━━━━━━━━━━━ LEFT FLOATING GRADIENT SCALE ━━━━━━━━━━━━━━━━
-            if self.state.param_mode.is_some() {
-                let screen = ctx.screen_rect();
-                let grad_top = TOOLBAR_HEIGHT + 16.0;
-                let grad_margin = 12.0;
-                let slider_panel_w = 64.0;
-                let grad_panel_w = 92.0;
-                // Keep gradient panel just left of the right slider panel.
-                let right_offset = -(grad_margin + slider_panel_w + 10.0 + grad_panel_w);
-                let grad_panel_h = (screen.height() - grad_top - 16.0).max(240.0);
-
-                egui::Area::new(egui::Id::new("gradient_scale_area"))
-                    .anchor(Align2::RIGHT_TOP, egui::vec2(right_offset, grad_top))
-                    .order(egui::Order::Foreground)
-                    .interactable(true)
-                    .movable(false)
-                    .show(ctx, |ui| {
-                        egui::Frame::none()
-                            .fill(Color32::from_rgba_premultiplied(255, 255, 255, 230))
-                            .rounding(Rounding::same(10.0))
-                            .shadow(egui::epaint::Shadow {
-                                offset: egui::vec2(0.0, 2.0),
-                                blur: 8.0,
-                                spread: 0.0,
-                                color: PANEL_SHADOW,
-                            })
-                            .inner_margin(egui::Margin::symmetric(10.0, 12.0))
-                            .show(ui, |ui| {
-                                // Hard bounds: no expansion beyond this panel size.
-                                ui.set_min_width(grad_panel_w);
-                                ui.set_max_width(grad_panel_w);
-
-                                let inner_h = grad_panel_h - 24.0;
-                                ui.allocate_ui_with_layout(
-                                    egui::vec2(grad_panel_w, inner_h),
-                                    egui::Layout::top_down(egui::Align::Center),
-                                    |ui| {
-                                        let bar_w = 16.0;
-                                        let bar_h = (inner_h - 160.0).max(120.0);
-
-                                        // Mode label
-                                        let mode_label = match self.state.param_mode {
-                                            Some(ParameterMode::Power) => "Power",
-                                            Some(ParameterMode::Speed) => "Speed",
-                                            Some(ParameterMode::WaitTime) => "Wait Time",
-                                            None => "",
-                                        };
-                                        ui.label(RichText::new(mode_label).size(11.0).strong().color(TEXT_PRIMARY));
-                                        ui.add_space(4.0);
-
-                                        // Max value label (top of scale)
-                                        ui.label(
-                                            RichText::new(format!("{:.1}", self.state.param_filter_max))
-                                                .size(10.0)
-                                                .color(TEXT_SECONDARY),
-                                        );
-                                        ui.add_space(2.0);
-
-                                        // Vertical gradient bar
-                                        let (rect, _) = ui.allocate_exact_size(
-                                            egui::vec2(bar_w, bar_h),
-                                            egui::Sense::hover(),
-                                        );
-                                        let n = 64;
-                                        let seg_h = rect.height() / n as f32;
-                                        for i in 0..n {
-                                            // t=1 at top (max/hot), t=0 at bottom (min/cold)
-                                            let t = 1.0 - (i as f32 / (n - 1) as f32);
-                                            let c = Color::heat_gradient(t);
-                                            let y0 = rect.top() + i as f32 * seg_h;
-                                            let seg = egui::Rect::from_min_max(
-                                                egui::pos2(rect.left(), y0),
-                                                egui::pos2(rect.right(), y0 + seg_h + 0.5),
-                                            );
-                                            ui.painter().rect_filled(
-                                                seg,
-                                                0.0,
-                                                Color32::from_rgb(
-                                                    (c.r * 255.0) as u8,
-                                                    (c.g * 255.0) as u8,
-                                                    (c.b * 255.0) as u8,
-                                                ),
-                                            );
-                                        }
-                                        ui.painter().rect_stroke(
-                                            rect,
-                                            Rounding::same(2.0),
-                                            Stroke::new(1.0, Color32::from_rgb(180, 180, 180)),
-                                        );
-
-                                        ui.add_space(2.0);
-                                        ui.label(
-                                            RichText::new(format!("{:.1}", self.state.param_filter_min))
-                                                .size(10.0)
-                                                .color(TEXT_SECONDARY),
-                                        );
-
-                                        ui.add_space(8.0);
-                                        ui.label(RichText::new("Filter").size(10.0).strong().color(TEXT_PRIMARY));
-                                        ui.add_space(2.0);
-
-                                        let data_range = match self.state.param_mode {
-                                            Some(ParameterMode::Power) => self.state.param_ranges.power,
-                                            Some(ParameterMode::Speed) => self.state.param_ranges.speed,
-                                            Some(ParameterMode::WaitTime) => self.state.param_ranges.wait_time,
-                                            None => None,
-                                        };
-                                        let (lo, hi) = data_range.unwrap_or((0.0, 1.0));
-                                        let speed = (hi - lo).abs() * 0.01;
-
-                                        ui.label(RichText::new("Min").size(10.0).color(TEXT_SECONDARY));
-                                        ui.add_sized(
-                                            egui::vec2(52.0, 18.0),
-                                            DragValue::new(&mut self.state.param_filter_min)
-                                                .speed(speed.max(0.1))
-                                                .clamp_range(lo..=self.state.param_filter_max),
-                                        );
-
-                                        ui.label(RichText::new("Max").size(10.0).color(TEXT_SECONDARY));
-                                        ui.add_sized(
-                                            egui::vec2(52.0, 18.0),
-                                            DragValue::new(&mut self.state.param_filter_max)
-                                                .speed(speed.max(0.1))
-                                                .clamp_range(self.state.param_filter_min..=hi),
-                                        );
-
-                                        ui.add_space(2.0);
-                                        let reset_btn = egui::Button::new(RichText::new("Reset").size(10.0))
-                                            .rounding(Rounding::same(4.0))
-                                            .min_size(Vec2::new(52.0, 20.0));
-                                        if ui.add(reset_btn).clicked() {
-                                            self.state.param_filter_min = lo;
-                                            self.state.param_filter_max = hi;
-                                        }
-                                    },
-                                );
-                            });
-                    });
+            // ── Vector slider ──
+            if let Some(ref vs_region) = regions.vector_slider {
+                let vs_out = components::show_vector_slider(
+                    ctx,
+                    vs_region,
+                    self.state.current_vector_index,
+                    self.state.total_vectors_in_layer,
+                );
+                if vs_out.vector_changed {
+                    vector_changed = true;
+                    new_vector = vs_out.new_vector;
+                }
             }
 
-            // ━━━━━━━━━━━━━━━━━━ FILE INFO POPUP ━━━━━━━━━━━━━━━━━━━━━━
+            // ── Gradient scale ──
+            if let Some(ref grad_region) = regions.gradient_panel {
+                if let Some(param_mode) = self.state.param_mode {
+                    components::show_gradient_scale(
+                        ctx,
+                        grad_region,
+                        param_mode,
+                        &mut self.state.param_filter_min,
+                        &mut self.state.param_filter_max,
+                        &self.state.param_ranges,
+                        &self.state.global_units,
+                    );
+                }
+            }
+
+            // ── Tool panel ──
+            let tool_out = components::show_tool_panel(
+                ctx,
+                &regions.tool_panel,
+                &mut self.state.tool_state.active_mode,
+                &mut self.state.tool_state.ruler_start,
+                &mut self.state.tool_state.ruler_end,
+                &mut self.state.tool_state.ruler_measurements,
+                &mut self.state.tool_state.show_grid,
+            );
+            zoom_in_requested = tool_out.zoom_in_requested;
+            zoom_out_requested = tool_out.zoom_out_requested;
+            fit_view_requested = tool_out.fit_view_requested;
+            snapshot_requested = tool_out.snapshot_requested;
+
+            // ── Overlays (rendered first so popups appear on top) ──
+            if self.state.tool_state.show_scale_bar {
+                let left_offset = if let Some(ref gp) = regions.gradient_panel {
+                    gp.pos.x + super::layout::GRADIENT_PANEL_WIDTH
+                } else {
+                    0.0
+                };
+                components::show_scale_bar(
+                    ctx,
+                    self.state.tool_state_zoom,
+                    self.state.global_units.length,
+                    left_offset,
+                );
+            }
+
+            components::show_ruler_overlay(
+                ctx,
+                &self.state.tool_state.ruler_measurements,
+                self.state.tool_state.ruler_start,
+                self.state.tool_state.ruler_end,
+                self.state.tool_state_view_transform.as_ref(),
+                self.state.global_units.length,
+            );
+
+            // Set crosshair cursor when a measurement dot has been placed (waiting for second point)
+            if self.state.tool_state.ruler_start.is_some() {
+                ctx.set_cursor_icon(egui::CursorIcon::Crosshair);
+            }
+
+            if let (Some(start), Some(end)) = (
+                self.state.tool_state.zoom_rect_start,
+                self.state.tool_state.zoom_rect_end,
+            ) {
+                components::show_zoom_rect(ctx, start, end);
+            }
+
+            if self.state.tool_state.show_grid {
+                if let Some(ref vt) = self.state.tool_state_view_transform {
+                    components::show_grid_labels(ctx, vt, self.state.global_units.length);
+                }
+            }
+
+            // ── Hover tooltip ──
+            if let Some(ref hover) = self.state.hover_info {
+                components::show_hover_tooltip(ctx, hover, &self.state.global_units);
+            }
+
+            // ── File info popup (rendered last for high z-order) ──
             if self.state.show_file_info {
-                egui::Window::new(RichText::new("📋 File Info").size(14.0).color(TEXT_PRIMARY))
-                    .collapsible(false)
-                    .resizable(false)
-                    .default_width(220.0)
-                    .anchor(Align2::LEFT_TOP, egui::vec2(12.0, TOOLBAR_HEIGHT + 12.0))
-                    .show(ctx, |ui| {
-                        ui.label(RichText::new("Layer Info").size(13.0).strong().color(TEXT_PRIMARY));
-                        ui.add_space(4.0);
-                        let vc = &self.state.vector_counts;
-                        let info_items = [
-                            ("Hatches", vc.hatches),
-                            ("Contours", vc.contours),
-                            ("Boundaries", vc.boundaries),
-                            ("Total vectors", vc.total_vectors),
-                        ];
-                        for (label, val) in &info_items {
-                            ui.horizontal(|ui| {
-                                ui.label(RichText::new(*label).size(12.0).color(TEXT_SECONDARY));
-                                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                    ui.label(RichText::new(format!("{}", val)).size(12.0).strong().color(TEXT_PRIMARY));
-                                });
-                            });
-                        }
-
-                        ui.add_space(8.0);
-                        ui.separator();
-                        ui.add_space(4.0);
-                        ui.label(RichText::new("Parameters").size(13.0).strong().color(TEXT_PRIMARY));
-                        ui.add_space(4.0);
-
-                        let params: Vec<(&str, Option<f32>)> = vec![
-                            ("VK Power", vc.vk_power),
-                            ("VK Speed", vc.vk_speed),
-                            ("VS Power", vc.vs_power),
-                            ("VS Speed", vc.vs_speed),
-                        ];
-                        for (label, val) in &params {
-                            if let Some(v) = val {
-                                ui.horizontal(|ui| {
-                                    ui.label(RichText::new(*label).size(12.0).color(TEXT_SECONDARY));
-                                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                        ui.label(RichText::new(format!("{:.0}", v)).size(12.0).strong().color(TEXT_PRIMARY));
-                                    });
-                                });
-                            }
-                        }
-                        if vc.wait_count > 0 {
-                            ui.horizontal(|ui| {
-                                ui.label(RichText::new("Wait times").size(12.0).color(TEXT_SECONDARY));
-                                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                    ui.label(RichText::new(format!("{}", vc.wait_count)).size(12.0).strong().color(TEXT_PRIMARY));
-                                });
-                            });
-                        }
-                    });
+                components::show_file_info(ctx, &self.state.vector_counts);
             }
 
-            // ━━━━━━━━━━━━━━━━━━ CONTROLS POPUP ━━━━━━━━━━━━━━━━━━━━━━
+            // ── Controls popup (rendered last for high z-order) ──
             if self.state.show_controls {
-                egui::Window::new(RichText::new("⌨ Controls").size(14.0).color(TEXT_PRIMARY))
-                    .collapsible(false)
-                    .resizable(false)
-                    .default_width(240.0)
-                    .anchor(Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
-                    .show(ctx, |ui| {
-                        let shortcuts = [
-                            ("↑ / ↓", "Navigate layers"),
-                            ("Page Up / Down", "Jump 10 layers"),
-                            ("Home / End", "First / Last layer"),
-                            ("Scroll Wheel", "Zoom in / out"),
-                            ("Middle Drag", "Pan view"),
-                            ("Ctrl + Left Drag", "Pan view"),
-                            ("R", "Reset view (fit to content)"),
-                            ("B", "Toggle boundaries"),
-                            ("C", "Toggle contours"),
-                            ("H", "Toggle hatches"),
-                            ("A", "Toggle direction arrows"),
-                        ];
-                        egui::Grid::new("controls_grid")
-                            .num_columns(2)
-                            .spacing([16.0, 4.0])
-                            .show(ui, |ui| {
-                                for (key, action) in &shortcuts {
-                                    ui.label(RichText::new(*key).size(12.0).strong().color(ACCENT));
-                                    ui.label(RichText::new(*action).size(12.0).color(TEXT_PRIMARY));
-                                    ui.end_row();
-                                }
-                            });
-                    });
+                components::show_controls_popup(ctx);
+            }
+
+            // ── Empty state message (no file loaded) ──
+            if self.state.total_layers == 0 && self.state.loading_file.is_none() {
+                let screen = ctx.screen_rect();
+                let center = egui::pos2(
+                    screen.center().x,
+                    (screen.top() + TOOLBAR_HEIGHT + screen.bottom()) / 2.0,
+                );
+                let painter = ctx.layer_painter(egui::LayerId::new(
+                    egui::Order::Foreground,
+                    egui::Id::new("empty_state"),
+                ));
+                painter.text(
+                    center + egui::vec2(0.0, -10.0),
+                    egui::Align2::CENTER_CENTER,
+                    "No file loaded",
+                    egui::FontId::proportional(20.0),
+                    egui::Color32::from_rgb(160, 160, 160),
+                );
+                painter.text(
+                    center + egui::vec2(0.0, 16.0),
+                    egui::Align2::CENTER_CENTER,
+                    "Drop an ILT file or press Ctrl+O to open",
+                    egui::FontId::proportional(13.0),
+                    egui::Color32::from_rgb(190, 190, 190),
+                );
+            }
+
+
+            // ── Loading overlay ──
+            if let Some(ref file_name) = self.state.loading_file {
+                let screen = ctx.screen_rect();
+                let painter = ctx.layer_painter(egui::LayerId::new(
+                    egui::Order::Tooltip,
+                    egui::Id::new("loading_overlay"),
+                ));
+                // Semi-transparent backdrop
+                painter.rect_filled(
+                    screen,
+                    0.0,
+                    egui::Color32::from_rgba_unmultiplied(0, 0, 0, 140),
+                );
+                let center = screen.center();
+                // Animated dots
+                let t = ctx.input(|i| i.time);
+                let dots = match ((t * 2.0) as usize) % 4 {
+                    0 => "",
+                    1 => ".",
+                    2 => "..",
+                    _ => "...",
+                };
+                painter.text(
+                    center + egui::vec2(0.0, -14.0),
+                    egui::Align2::CENTER_CENTER,
+                    format!("Loading{}", dots),
+                    egui::FontId::proportional(22.0),
+                    egui::Color32::WHITE,
+                );
+                painter.text(
+                    center + egui::vec2(0.0, 14.0),
+                    egui::Align2::CENTER_CENTER,
+                    file_name,
+                    egui::FontId::proportional(14.0),
+                    egui::Color32::from_rgb(200, 200, 200),
+                );
+                // Request continuous redraws for animation
+                ctx.request_repaint();
             }
         });
 
@@ -693,14 +601,24 @@ impl UiRenderer {
             self.state.current_layer = new_layer;
         }
 
+        // Update state if vector changed via slider
+        if vector_changed {
+            self.state.current_vector_index = new_vector;
+        }
+
         // Handle platform output
-        self.winit_state.handle_platform_output(window, full_output.platform_output.clone());
+        self.winit_state
+            .handle_platform_output(window, full_output.platform_output.clone());
 
         let needs_repaint = full_output
             .viewport_output
             .get(&ViewportId::ROOT)
             .map(|v| v.repaint_delay.is_zero())
             .unwrap_or(false);
+
+        // Build tool state output
+        self.state.tool_state.snapshot_requested = snapshot_requested;
+        let tool_output = self.state.tool_state.clone();
 
         // Store output for deferred painting
         self.pending_output = Some(full_output);
@@ -711,11 +629,22 @@ impl UiRenderer {
             show_contours: self.state.show_contours,
             show_hatches: self.state.show_hatches,
             show_arrows: self.state.show_arrows,
-            show_power_markers: self.state.show_power_markers,
+            show_wait_markers: self.state.show_wait_markers,
             param_mode: self.state.param_mode,
             param_filter_min: self.state.param_filter_min,
             param_filter_max: self.state.param_filter_max,
-            needs_repaint,
+            needs_repaint: needs_repaint
+                || zoom_in_requested
+                || zoom_out_requested
+                || fit_view_requested,
+            open_file_requested,
+            tool_state: tool_output,
+            global_units: self.state.global_units.clone(),
+            zoom_in_requested,
+            zoom_out_requested,
+            fit_view_requested,
+            vector_view_enabled: self.state.vector_view_enabled,
+            vector_index: self.state.current_vector_index,
         }
     }
 

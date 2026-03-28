@@ -1,3 +1,4 @@
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 //! Toolpath Viewer - A high-performance toolpath visualization application
 //!
 //! This application uses Clean Architecture with the following layers:

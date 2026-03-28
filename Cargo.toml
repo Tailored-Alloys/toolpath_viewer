@@ -27,6 +27,10 @@ nalgebra-glm = "0.18"
 flate2 = "1.0"  # For gzip/deflate decompression
 zip = "2.2"     # For ZIP-compressed ILT files
 byteorder = "1.5"
+rfd = "0.15"    # Native file dialogs
+
+# Parallel processing
+rayon = "1.10"  # Data-parallel CPU processing for file parsing
 
 # Error handling
 thiserror = "1.0"
@@ -36,9 +40,17 @@ anyhow = "1.0"
 log = "0.4"
 env_logger = "0.10"
 
+# Image decoding (for icon/logo PNGs)
+image = { version = "0.25", default-features = false, features = ["png"] }
+
 # Serialization (for config)
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+lucide-icons = "0.575.0"
+egui_extras = { version = "0.27", features = ["svg"] }
+
+[build-dependencies]
+winresource = "0.1"
 
 [dev-dependencies]
 criterion = "0.5"  # Benchmarking

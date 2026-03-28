@@ -21,11 +21,12 @@ pub struct ColorScheme {
 impl Default for ColorScheme {
     fn default() -> Self {
         Self {
-            boundary: Color::from_hex("#2E7D32").unwrap_or(Color::GREEN),
-            contour: Color::from_hex("#1565C0").unwrap_or(Color::BLUE),
-            base_contour: Color::from_hex("#00695C").unwrap_or(Color::CYAN),
+            // Updated semantic colors to avoid conflict with Viridis gradient
+            boundary: Color::from_hex("#2C3E50").unwrap_or(Color::GREEN),   // Dark slate
+            contour: Color::from_hex("#00BCD4").unwrap_or(Color::CYAN),     // Cyan
+            base_contour: Color::from_hex("#009688").unwrap_or(Color::CYAN), // Teal
             depth_contour: Color::from_hex("#AD1457").unwrap_or(Color::MAGENTA),
-            hatch: Color::from_hex("#BF360C").unwrap_or(Color::new(0.9, 0.3, 0.0, 1.0)),
+            hatch: Color::from_hex("#E91E63").unwrap_or(Color::new(0.9, 0.1, 0.4, 1.0)), // Pink
             support: Color::from_hex("#616161").unwrap_or(Color::GRAY),
             travel: Color::from_hex("#388E3C").unwrap_or(Color::GREEN).with_alpha(0.4),
         }

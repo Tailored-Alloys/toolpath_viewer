@@ -37,8 +37,44 @@ pub enum InputAction {
     ToggleHatches,
     /// Toggle direction arrows
     ToggleArrows,
+    /// Toggle wait time markers
+    ToggleWaitMarkers,
+    /// Toggle scale bar
+    ToggleScaleBar,
     /// Open file dialog
     OpenFile,
+    /// Take a snapshot (screenshot)
+    Snapshot,
+    /// Toggle background grid
+    ToggleGrid,
+    /// Zoom in
+    ZoomIn,
+    /// Zoom out
+    ZoomOut,
+    /// Toggle zoom selection mode
+    ToggleZoomSelect,
+    /// Toggle ruler (measure) tool
+    ToggleRuler,
+    /// Clear ruler measurements
+    ClearMeasurements,
+    /// Set parameter color mode: None
+    ParamModeNone,
+    /// Set parameter color mode: Power
+    ParamModePower,
+    /// Set parameter color mode: Speed
+    ParamModeSpeed,
+    /// Set parameter color mode: WaitTime
+    ParamModeWaitTime,
+    /// Toggle file info panel
+    ToggleFileInfo,
+    /// Toggle controls popup
+    ToggleControls,
+    /// Toggle vector-by-vector view
+    ToggleVectorView,
+    /// Next vector (when vector view active)
+    NextVector,
+    /// Previous vector (when vector view active)
+    PrevVector,
     /// Quit application
     Quit,
 }
@@ -114,9 +150,37 @@ pub fn key_to_action(key: &str, ctrl: bool, shift: bool) -> Option<InputAction> 
         ("c", false, false) => Some(InputAction::ToggleContours),
         ("h", false, false) => Some(InputAction::ToggleHatches),
         ("a", false, false) => Some(InputAction::ToggleArrows),
-        
+        ("t", false, false) => Some(InputAction::ToggleWaitMarkers),
+        ("v", false, false) => Some(InputAction::ToggleScaleBar),
+        ("g", false, false) => Some(InputAction::ToggleGrid),
+        ("i", false, false) => Some(InputAction::ToggleFileInfo),
+        ("f1", false, false) => Some(InputAction::ToggleControls),
+
+        // Zoom
+        ("+" | "=", false, false) => Some(InputAction::ZoomIn),
+        ("-", false, false) => Some(InputAction::ZoomOut),
+        ("z", false, false) => Some(InputAction::ToggleZoomSelect),
+
+        // Vector view
+        ("n", false, false) => Some(InputAction::ToggleVectorView),
+        ("right", false, false) => Some(InputAction::NextVector),
+        ("left", false, false) => Some(InputAction::PrevVector),
+
+        // Tools
+        ("m", false, false) => Some(InputAction::ToggleRuler),
+        ("x", false, false) => Some(InputAction::ClearMeasurements),
+
+        // Color modes
+        ("1", false, false) => Some(InputAction::ParamModeNone),
+        ("2", false, false) => Some(InputAction::ParamModePower),
+        ("3", false, false) => Some(InputAction::ParamModeSpeed),
+        ("4", false, false) => Some(InputAction::ParamModeWaitTime),
+
         // File operations
         ("o", true, false) => Some(InputAction::OpenFile),
+
+        // Snapshot
+        ("p", true, false) => Some(InputAction::Snapshot),
         
         // Application
         ("q", true, false) | ("escape", _, _) => Some(InputAction::Quit),

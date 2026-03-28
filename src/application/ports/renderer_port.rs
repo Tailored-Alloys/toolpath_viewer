@@ -38,18 +38,28 @@ pub struct DisplayOptions {
     pub show_hatches: bool,
     /// Show direction arrows
     pub show_arrows: bool,
-    /// Show power markers (asterisks on vectors with power data)
-    pub show_power_markers: bool,
     /// Parameter visualization mode
     pub param_mode: Option<ParameterMode>,
     /// Parameter filter range minimum
     pub param_filter_min: f32,
     /// Parameter filter range maximum
     pub param_filter_max: f32,
+    /// Wait time range minimum (for marker coloring)
+    pub wait_time_min: f32,
+    /// Wait time range maximum (for marker coloring)
+    pub wait_time_max: f32,
+    /// Show wait time markers (asterisks)
+    pub show_wait_markers: bool,
+    /// Show background grid
+    pub show_grid: bool,
+    /// Grid unit for display
+    pub grid_unit: GridUnit,
     /// Background color
     pub background_color: Color,
     /// Line width multiplier
     pub line_width: f32,
+    /// Maximum vector index to render (None = all vectors, Some(n) = 0..=n)
+    pub max_vector_index: Option<usize>,
 }
 
 impl Default for DisplayOptions {
@@ -60,12 +70,17 @@ impl Default for DisplayOptions {
             show_depth_contours: true,
             show_hatches: true,
             show_arrows: false,
-            show_power_markers: false,
             param_mode: None,
             param_filter_min: 0.0,
             param_filter_max: f32::MAX,
+            wait_time_min: 0.0,
+            wait_time_max: f32::MAX,
+            show_wait_markers: false,
+            show_grid: true,
+            grid_unit: GridUnit::Millimeters,
             background_color: Color::from_hex("#FAFAFA").unwrap_or(Color::WHITE),
             line_width: 1.5,
+            max_vector_index: None,
         }
     }
 }
@@ -76,6 +91,148 @@ pub enum ParameterMode {
     Power,
     Speed,
     WaitTime,
+}
+
+/// Grid unit for measurement display
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GridUnit {
+    Millimeters,
+    Micrometers,
+    Inches,
+}
+
+impl GridUnit {
+    /// Display label for the unit
+    pub fn label(&self) -> &'static str {
+        match self {
+            GridUnit::Millimeters => "mm",
+            GridUnit::Micrometers => "µm",
+            GridUnit::Inches => "in",
+        }
+    }
+
+    /// Conversion factor from mm to this unit
+    pub fn from_mm(&self, mm: f32) -> f32 {
+        match self {
+            GridUnit::Millimeters => mm,
+            GridUnit::Micrometers => mm * 1000.0,
+            GridUnit::Inches => mm / 25.4,
+        }
+    }
+
+    /// Speed label derived from this length unit
+    pub fn speed_label(&self) -> &'static str {
+        match self {
+            GridUnit::Millimeters => "mm/s",
+            GridUnit::Micrometers => "µm/s",
+            GridUnit::Inches => "in/s",
+        }
+    }
+
+    /// Convert speed value from mm/s to this unit per second
+    pub fn speed_from_mm_per_s(&self, mm_per_s: f32) -> f32 {
+        self.from_mm(mm_per_s)
+    }
+}
+
+/// Time unit for display
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TimeUnit {
+    Microseconds,
+    Milliseconds,
+    Seconds,
+}
+
+impl TimeUnit {
+    /// Display label
+    pub fn label(&self) -> &'static str {
+        match self {
+            TimeUnit::Microseconds => "µs",
+            TimeUnit::Milliseconds => "ms",
+            TimeUnit::Seconds => "s",
+        }
+    }
+
+    /// Convert from microseconds (file native) to this unit
+    pub fn from_us(&self, us: f32) -> f32 {
+        match self {
+            TimeUnit::Microseconds => us,
+            TimeUnit::Milliseconds => us / 1000.0,
+            TimeUnit::Seconds => us / 1_000_000.0,
+        }
+    }
+}
+
+/// Power unit for display
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PowerUnit {
+    Watts,
+    Kilowatts,
+}
+
+impl PowerUnit {
+    /// Display label
+    pub fn label(&self) -> &'static str {
+        match self {
+            PowerUnit::Watts => "W",
+            PowerUnit::Kilowatts => "kW",
+        }
+    }
+
+    /// Convert from watts (file native) to this unit
+    pub fn from_watts(&self, w: f32) -> f32 {
+        match self {
+            PowerUnit::Watts => w,
+            PowerUnit::Kilowatts => w / 1000.0,
+        }
+    }
+}
+
+/// Global unit settings for the application
+#[derive(Debug, Clone)]
+pub struct GlobalUnits {
+    pub length: GridUnit,
+    pub time: TimeUnit,
+    pub power: PowerUnit,
+}
+
+impl Default for GlobalUnits {
+    fn default() -> Self {
+        Self {
+            length: GridUnit::Millimeters,
+            time: TimeUnit::Microseconds,
+            power: PowerUnit::Watts,
+        }
+    }
+}
+
+impl GlobalUnits {
+    /// Get the display label for a parameter mode value, using current units
+    pub fn param_label(&self, mode: ParameterMode) -> String {
+        match mode {
+            ParameterMode::Power => format!("Power ({})", self.power.label()),
+            ParameterMode::Speed => format!("Speed ({})", self.length.speed_label()),
+            ParameterMode::WaitTime => format!("Wait ({})", self.time.label()),
+        }
+    }
+
+    /// Get the unit suffix for a parameter mode
+    pub fn param_suffix(&self, mode: ParameterMode) -> String {
+        match mode {
+            ParameterMode::Power => format!(" {}", self.power.label()),
+            ParameterMode::Speed => format!(" {}", self.length.speed_label()),
+            ParameterMode::WaitTime => format!(" {}", self.time.label()),
+        }
+    }
+
+    /// Convert a raw parameter value from file-native units to display units
+    pub fn convert_param(&self, mode: ParameterMode, raw: f32) -> f32 {
+        match mode {
+            ParameterMode::Power => self.power.from_watts(raw),
+            ParameterMode::Speed => self.length.speed_from_mm_per_s(raw),
+            ParameterMode::WaitTime => self.time.from_us(raw),
+        }
+    }
 }
 
 /// Camera/view state
@@ -137,6 +294,33 @@ impl ViewState {
         // Adjust center to keep point under cursor stationary
         self.center.x = world_x - (screen_x - viewport_width / 2.0) / self.zoom;
         self.center.y = world_y - (screen_y - viewport_height / 2.0) / self.zoom;
+    }
+
+    /// Convert screen coordinates to world coordinates.
+    /// `screen_x`, `screen_y` are in viewport space (0,0 = top-left of render area).
+    /// Y is flipped: viewport top = 0, increasing downward.
+    pub fn screen_to_world(&self, screen_x: f32, screen_y: f32, viewport_width: f32, viewport_height: f32) -> Point2D {
+        let world_x = self.center.x + (screen_x - viewport_width / 2.0) / self.zoom;
+        let world_y = self.center.y + (viewport_height / 2.0 - screen_y) / self.zoom;
+        Point2D::new(world_x, world_y)
+    }
+
+    /// Convert world coordinates to screen coordinates.
+    /// Returns viewport-space coords (0,0 = top-left of render area).
+    pub fn world_to_screen(&self, world_x: f32, world_y: f32, viewport_width: f32, viewport_height: f32) -> Point2D {
+        let screen_x = (world_x - self.center.x) * self.zoom + viewport_width / 2.0;
+        let screen_y = viewport_height / 2.0 - (world_y - self.center.y) * self.zoom;
+        Point2D::new(screen_x, screen_y)
+    }
+
+    /// Get the visible world-coordinate bounds for the current view.
+    pub fn visible_bounds(&self, viewport_width: f32, viewport_height: f32) -> (Point2D, Point2D) {
+        let half_w = viewport_width / (2.0 * self.zoom);
+        let half_h = viewport_height / (2.0 * self.zoom);
+        (
+            Point2D::new(self.center.x - half_w, self.center.y - half_h),
+            Point2D::new(self.center.x + half_w, self.center.y + half_h),
+        )
     }
 }
 

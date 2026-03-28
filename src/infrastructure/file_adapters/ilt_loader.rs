@@ -16,6 +16,7 @@ use crate::domain::entities::{Toolpath, VectorType};
 use crate::infrastructure::file_adapters::CliParser;
 use flate2::read::GzDecoder;
 use log::{debug, info};
+use rayon::prelude::*;
 use std::fs::File;
 use std::io::{BufReader, Read};
 use std::path::Path;
@@ -71,7 +72,8 @@ impl IltLoader {
         }
     }
 
-    /// Load and decompress a ZIP-compressed ILT file
+    /// Load and decompress a ZIP-compressed ILT file.
+    /// CLI entries are extracted sequentially then parsed in parallel with rayon.
     fn load_zip(&self, path: &Path) -> FileResult<Toolpath> {
         info!("Loading ZIP-compressed ILT file: {:?}", path);
         
@@ -113,52 +115,68 @@ impl IltLoader {
         info!("Found {} CLI file(s) in ZIP: {:?}", cli_entries.len(), 
               cli_entries.iter().map(|(_, n)| n.as_str()).collect::<Vec<_>>());
         
-        let mut merged_toolpath: Option<Toolpath> = None;
+        // Phase 1: Extract all CLI entries into memory (sequential — ZipArchive is not Send)
+        let mut extracted: Vec<(String, String, Option<VectorType>, Vec<u8>)> = Vec::with_capacity(cli_entries.len());
         
         for (file_index, file_name) in &cli_entries {
-            // Determine source type from filename
             let lower = file_name.to_lowercase();
             let (source_label, hatch_override) = if lower.contains("_vk") {
-                ("vk", Some(VectorType::Contour))
+                ("vk".to_string(), Some(VectorType::Contour))
             } else if lower.contains("_vs") {
-                ("vs", Some(VectorType::Hatch))
+                ("vs".to_string(), Some(VectorType::Hatch))
             } else {
-                ("unknown", None)
+                ("unknown".to_string(), None)
             };
-            
-            info!("Parsing {} as '{}' (type override: {:?})", file_name, source_label, hatch_override);
             
             let mut zip_file = archive.by_index(*file_index)
                 .map_err(|e| FileError::DecompressionError(format!("Failed to read ZIP entry: {}", e)))?;
             
             debug!("Extracting: {} ({} bytes)", zip_file.name(), zip_file.size());
             
-            let mut decompressed = Vec::new();
+            let mut decompressed = Vec::with_capacity(zip_file.size() as usize);
             zip_file.read_to_end(&mut decompressed)
                 .map_err(|e| FileError::DecompressionError(format!("Failed to extract: {}", e)))?;
 
-            debug!("Extracted {} bytes", decompressed.len());
-
-            // Parse with appropriate overrides
-            let mut parser = CliParser::new();
-            if let Some(scale) = self.scale_override {
-                parser = CliParser::with_scale(scale);
-            }
-            if let Some(vtype) = hatch_override {
-                parser.set_hatch_type_override(vtype);
-            }
-            parser.set_source_label(source_label);
-            
-            let cursor = std::io::Cursor::new(decompressed);
-            let toolpath = parser.parse(cursor)?;
-            
-            let stats = toolpath.slice_stack.stats();
-            info!(
-                "  {} -> {} layers, {} vectors, {} points",
-                source_label, stats.layer_count, stats.total_vectors, stats.total_points
-            );
-            
-            // Merge into combined toolpath
+            debug!("Extracted {} bytes from {}", decompressed.len(), file_name);
+            extracted.push((file_name.clone(), source_label, hatch_override, decompressed));
+        }
+        
+        // Phase 2: Parse all CLI buffers in parallel with rayon
+        let scale_override = self.scale_override;
+        
+        info!("Parsing {} CLI files in parallel", extracted.len());
+        
+        let results: Vec<FileResult<Toolpath>> = extracted
+            .into_par_iter()
+            .map(|(file_name, source_label, hatch_override, data)| {
+                info!("Parsing {} as '{}' (type override: {:?})", file_name, source_label, hatch_override);
+                
+                let mut parser = match scale_override {
+                    Some(s) => CliParser::with_scale(s),
+                    None => CliParser::new(),
+                };
+                if let Some(vtype) = hatch_override {
+                    parser.set_hatch_type_override(vtype);
+                }
+                parser.set_source_label(&source_label);
+                
+                let cursor = std::io::Cursor::new(data);
+                let toolpath = parser.parse(cursor)?;
+                
+                let stats = toolpath.slice_stack.stats();
+                info!(
+                    "  {} -> {} layers, {} vectors, {} points",
+                    source_label, stats.layer_count, stats.total_vectors, stats.total_points
+                );
+                
+                Ok(toolpath)
+            })
+            .collect();
+        
+        // Phase 3: Merge results sequentially (fast operation)
+        let mut merged_toolpath: Option<Toolpath> = None;
+        for result in results {
+            let toolpath = result?;
             merged_toolpath = Some(match merged_toolpath {
                 None => toolpath,
                 Some(existing) => Self::merge_toolpaths(existing, toolpath),

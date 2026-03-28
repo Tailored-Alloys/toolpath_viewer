@@ -7,7 +7,7 @@ use crate::application::use_cases::ColorScheme;
 use crate::domain::entities::{Layer, Vector, VectorType};
 use crate::domain::value_objects::{Color, Point2D};
 use crate::infrastructure::rendering::{
-    LineBatch, ShaderProgram,
+    GridRenderer, LineBatch, ShaderProgram,
     DEFAULT_FRAGMENT_SHADER, DEFAULT_VERTEX_SHADER,
 };
 use log::{debug, info};
@@ -44,6 +44,16 @@ fn view_matrix(view: &ViewState) -> [f32; 16] {
 ///
 /// Arrow angle half-width in radians (~25°).
 const ARROW_HALF_ANGLE: f32 = 0.4363; // std::f32::consts is not const-fn friendly, pre-computed
+
+/// Minimum arrow arm length (world units, mm) — prevents invisible arrows on very short vectors.
+const ARROW_ARM_MIN: f32 = 0.02;
+/// Maximum arrow arm length (world units, mm) — prevents oversized arrows on long vectors.
+const ARROW_ARM_MAX: f32 = 0.15;
+
+/// Minimum star marker radius (world units, mm) — prevents invisible wait time markers.
+const STAR_RADIUS_MIN: f32 = 0.015;
+/// Maximum star marker radius (world units, mm) — prevents oversized wait time markers.
+const STAR_RADIUS_MAX: f32 = 0.12;
 
 /// Add an arrowhead to `batch` at `tip` pointing in direction (`dx`, `dy`).
 /// `arm_len` controls the size of the arrow arms.
@@ -121,7 +131,11 @@ pub struct GlRenderer {
     boundary_batch: LineBatch,
     hatch_batch: LineBatch,
     arrow_batch: LineBatch,
-    marker_batch: LineBatch,
+    wait_marker_batch: LineBatch,
+    /// Whether to render wait markers
+    show_wait_markers: bool,
+    /// Grid renderer
+    grid_renderer: GridRenderer,
     color_scheme: ColorScheme,
     initialized: bool,
     /// Track last hatch count to reduce log spam
@@ -143,7 +157,9 @@ impl GlRenderer {
             boundary_batch: LineBatch::new(),
             hatch_batch: LineBatch::new(),
             arrow_batch: LineBatch::new(),
-            marker_batch: LineBatch::new(),
+            wait_marker_batch: LineBatch::new(),
+            show_wait_markers: true,
+            grid_renderer: GridRenderer::new(),
             color_scheme: ColorScheme::default(),
             initialized: false,
             last_hatch_count: usize::MAX,
@@ -164,6 +180,55 @@ impl GlRenderer {
     /// Set vertical view offset (to shift content away from top toolbar)
     pub fn set_view_offset_y(&mut self, offset: f32) {
         self.view_offset_y = offset;
+    }
+
+    /// Render the background grid before layer content.
+    pub fn render_grid(&mut self, view: &ViewState) -> RenderResult<()> {
+        let shader = self.shader.as_ref().ok_or_else(|| {
+            RenderError::InvalidState("Shader not initialized".to_string())
+        })?;
+
+        shader.use_program();
+
+        let half_w = (self.width as f32) / 2.0;
+        let half_h = (self.height as f32) / 2.0;
+        let off_x = self.view_offset_x;
+        let off_y = self.view_offset_y;
+        let projection = ortho(-half_w + off_x, half_w + off_x, -half_h + off_y, half_h + off_y, -1.0, 1.0);
+        shader.set_mat4("uProjection", &projection);
+        let view_mat = view_matrix(view);
+        shader.set_mat4("uView", &view_mat);
+
+        let viewport_w = self.width as f32;
+        let viewport_h = self.height as f32;
+        self.grid_renderer.prepare(view, viewport_w, viewport_h);
+        self.grid_renderer.render();
+
+        Ok(())
+    }
+
+    /// Capture the current framebuffer as RGBA pixels.
+    /// Returns (width, height, rgba_data).
+    pub fn capture_framebuffer(&self) -> (u32, u32, Vec<u8>) {
+        let w = self.width;
+        let h = self.height;
+        let mut pixels = vec![0u8; (w * h * 4) as usize];
+        unsafe {
+            gl::ReadPixels(
+                0, 0, w as i32, h as i32,
+                gl::RGBA, gl::UNSIGNED_BYTE,
+                pixels.as_mut_ptr() as *mut _,
+            );
+        }
+        // Flip vertically (OpenGL origin is bottom-left)
+        let row_size = (w * 4) as usize;
+        let mut flipped = vec![0u8; pixels.len()];
+        for y in 0..h as usize {
+            let src_row = (h as usize - 1 - y) * row_size;
+            let dst_row = y * row_size;
+            flipped[dst_row..dst_row + row_size].copy_from_slice(&pixels[src_row..src_row + row_size]);
+        }
+        (w, h, flipped)
     }
 
     /// Initialize OpenGL state
@@ -199,18 +264,24 @@ impl GlRenderer {
         self.boundary_batch.clear();
         self.hatch_batch.clear();
         self.arrow_batch.clear();
-        self.marker_batch.clear();
+        self.wait_marker_batch.clear();
+        self.show_wait_markers = options.show_wait_markers;
 
         let dim_color = Color::rgb(0.3, 0.3, 0.3);
-        let star_color = Color::rgb(1.0, 0.4, 0.0);  // orange stars
 
         let marker_size = compute_marker_size(layer);
-        let arrow_arm = marker_size * 0.8;
-        let star_radius = marker_size * 0.6;
+        let arrow_arm = (marker_size * 0.8).clamp(ARROW_ARM_MIN, ARROW_ARM_MAX);
+        let star_radius = (marker_size * 0.6).clamp(STAR_RADIUS_MIN, STAR_RADIUS_MAX);
         // Place arrows every `arrow_spacing` world-units along polylines
         let arrow_spacing = marker_size * 8.0;
 
-        for vector in &layer.vectors {
+        // Limit vectors when vector-by-vector view is active
+        let vector_limit = match options.max_vector_index {
+            Some(max_idx) => (max_idx + 1).min(layer.vectors.len()),
+            None => layer.vectors.len(),
+        };
+
+        for vector in &layer.vectors[..vector_limit] {
             // Determine color: parameter gradient when a mode is active, else type-based
             let color = if let Some(param_mode) = options.param_mode {
                 let param_value = match param_mode {
@@ -229,7 +300,7 @@ impl GlRenderer {
                         } else {
                             0.5
                         };
-                        Color::heat_gradient(t)
+                        Color::viridis_gradient(t)
                     }
                     None => dim_color, // no param data, show dimmed
                 }
@@ -289,7 +360,7 @@ impl GlRenderer {
                         let dx = p1.x - p0.x;
                         let dy = p1.y - p0.y;
                         let hatch_len = (dx * dx + dy * dy).sqrt();
-                        let hatch_arm = (hatch_len * 0.25).min(arrow_arm);
+                        let hatch_arm = (hatch_len * 0.25).clamp(ARROW_ARM_MIN, ARROW_ARM_MAX);
                         add_arrowhead(&mut self.arrow_batch, p1, dx, dy, hatch_arm, &color);
                     }
                     VectorType::Contour | VectorType::BaseContour
@@ -304,7 +375,7 @@ impl GlRenderer {
                             accum += seg_len;
                             if accum >= arrow_spacing {
                                 accum -= arrow_spacing;
-                                add_arrowhead(&mut self.arrow_batch, &pair[1], dx, dy, arrow_arm, &color);
+                                add_arrowhead(&mut self.arrow_batch, &pair[1], dx, dy, arrow_arm.clamp(ARROW_ARM_MIN, ARROW_ARM_MAX), &color);
                             }
                         }
                     }
@@ -312,30 +383,29 @@ impl GlRenderer {
                 }
             }
 
-            // --- Power star markers ---
-            if options.show_power_markers && vector.parameters.power.is_some() && vector.points.len() >= 2 {
-                match vector.vector_type {
-                    VectorType::Hatch => {
-                        // Star at midpoint
-                        let p0 = &vector.points[0];
-                        let p1 = &vector.points[1];
-                        let mid = Point2D::new(
-                            (p0.x + p1.x) * 0.5,
-                            (p0.y + p1.y) * 0.5,
-                        );
-                        add_star_marker(&mut self.marker_batch, &mid, star_radius, &star_color);
-                    }
-                    _ => {
-                        // Stars at regular intervals along polylines
-                        let mut accum = arrow_spacing * 0.5;
-                        for pair in vector.points.windows(2) {
-                            let dx = pair[1].x - pair[0].x;
-                            let dy = pair[1].y - pair[0].y;
-                            let seg_len = (dx * dx + dy * dy).sqrt();
-                            accum += seg_len;
-                            if accum >= arrow_spacing {
-                                accum -= arrow_spacing;
-                                add_star_marker(&mut self.marker_batch, &pair[1], star_radius, &star_color);
+            // --- Wait time markers (at END of vectors with wait_time) ---
+            // Color based on wait time value using heat gradient
+            if let Some(wait_val) = vector.parameters.wait_time {
+                if vector.points.len() >= 2 {
+                    // Compute normalized value for viridis gradient
+                    let range = options.wait_time_max - options.wait_time_min;
+                    let t = if range > 0.0 {
+                        (wait_val - options.wait_time_min) / range
+                    } else {
+                        0.5
+                    };
+                    let wait_color = Color::viridis_gradient(t);
+                    
+                    match vector.vector_type {
+                        VectorType::Hatch => {
+                            // Star at endpoint (p1) where the laser waits
+                            let p1 = &vector.points[1];
+                            add_star_marker(&mut self.wait_marker_batch, p1, star_radius, &wait_color);
+                        }
+                        _ => {
+                            // For polylines, star at the last point
+                            if let Some(last) = vector.points.last() {
+                                add_star_marker(&mut self.wait_marker_batch, last, star_radius, &wait_color);
                             }
                         }
                     }
@@ -347,7 +417,7 @@ impl GlRenderer {
         self.boundary_batch.set_line_width(options.line_width * 1.5);
         self.hatch_batch.set_line_width(options.line_width * 0.8);
         self.arrow_batch.set_line_width(options.line_width * 0.8);
-        self.marker_batch.set_line_width(options.line_width * 1.5);
+        self.wait_marker_batch.set_line_width(options.line_width * 1.5);
 
         let hatch_count = self.hatch_batch.vertex_count() / 2;
         if hatch_count != self.last_hatch_count {
@@ -406,7 +476,9 @@ impl GlRenderer {
         self.contour_batch.render();
         self.boundary_batch.render();
         self.arrow_batch.render();
-        self.marker_batch.render();
+        if self.show_wait_markers {
+            self.wait_marker_batch.render();
+        }
 
         Ok(())
     }

@@ -110,6 +110,40 @@ impl Color {
         }
     }
 
+    /// Viridis colormap: perceptually uniform, colorblind-safe gradient
+    /// purple (#440154) -> teal (#31688E) -> green (#35B779) -> yellow (#FDE725)
+    pub fn viridis_gradient(t: f32) -> Color {
+        let t = t.clamp(0.0, 1.0);
+        // Viridis color stops
+        const C0: (f32, f32, f32) = (0.267, 0.004, 0.329); // #440154
+        const C1: (f32, f32, f32) = (0.192, 0.408, 0.557); // #31688E
+        const C2: (f32, f32, f32) = (0.208, 0.718, 0.475); // #35B779
+        const C3: (f32, f32, f32) = (0.992, 0.906, 0.145); // #FDE725
+
+        if t < 0.333 {
+            let s = t / 0.333;
+            Color::rgb(
+                C0.0 + (C1.0 - C0.0) * s,
+                C0.1 + (C1.1 - C0.1) * s,
+                C0.2 + (C1.2 - C0.2) * s,
+            )
+        } else if t < 0.667 {
+            let s = (t - 0.333) / 0.334;
+            Color::rgb(
+                C1.0 + (C2.0 - C1.0) * s,
+                C1.1 + (C2.1 - C1.1) * s,
+                C1.2 + (C2.2 - C1.2) * s,
+            )
+        } else {
+            let s = (t - 0.667) / 0.333;
+            Color::rgb(
+                C2.0 + (C3.0 - C2.0) * s,
+                C2.1 + (C3.1 - C2.1) * s,
+                C2.2 + (C3.2 - C2.2) * s,
+            )
+        }
+    }
+
     // Common colors
     pub const WHITE: Color = Color::rgb(1.0, 1.0, 1.0);
     pub const BLACK: Color = Color::rgb(0.0, 0.0, 0.0);

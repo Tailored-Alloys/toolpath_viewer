@@ -16,9 +16,11 @@
 use crate::application::ports::{FileError, FileResult};
 use crate::domain::entities::{Layer, LayerParameters, SliceStack, Toolpath, ToolpathMetadata, Vector, VectorType};
 use crate::domain::value_objects::Point2D;
-use log::{debug, trace, warn};
+use log::{debug, info, trace, warn};
+use rayon::prelude::*;
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 /// CLI file parser
 pub struct CliParser {
@@ -55,6 +57,7 @@ impl CliParser {
     /// 
     /// CLI files use $$ as command delimiters anywhere in the file (not just line starts).
     /// Commands can span multiple lines with coordinates continuing until the next $$ marker.
+    /// Layers are parsed in parallel using rayon for improved throughput on large files.
     pub fn parse<R: Read>(&self, reader: R) -> FileResult<Toolpath> {
         // Read entire content
         let mut content = String::new();
@@ -62,26 +65,18 @@ impl CliParser {
         buf_reader.read_to_string(&mut content)
             .map_err(|e| FileError::IoError(e))?;
         
-        let mut parser_state = CliParserState::new(self.scale);
-        parser_state.hatch_type_override = self.hatch_type_override;
-        parser_state.source_label = self.source_label.clone();
-        
-        // Split by $$ and process each command
-        // The first split part (before first $$) might be empty or header data
+        // Normalize all $$ commands into a list of strings
         let parts: Vec<&str> = content.split("$$").collect();
+        let mut commands: Vec<String> = Vec::with_capacity(parts.len());
         
         for (idx, part) in parts.iter().enumerate() {
             if idx == 0 && !part.trim().is_empty() {
-                // Data before first $$ - likely header or continuation
                 continue;
             }
-            
             let trimmed = part.trim();
             if trimmed.is_empty() {
                 continue;
             }
-            
-            // Remove all newlines and extra whitespace, normalize to single content
             let normalized: String = trimmed
                 .chars()
                 .map(|c| if c.is_whitespace() { ' ' } else { c })
@@ -89,17 +84,118 @@ impl CliParser {
                 .split_whitespace()
                 .collect::<Vec<&str>>()
                 .join("");
-            
             if !normalized.is_empty() {
-                // Prepend $$ for process_line compatibility
-                let command = format!("$${}", normalized);
-                if let Err(e) = parser_state.process_line(&command, idx + 1) {
-                    trace!("Parse issue at command {}: {:?}", idx, e);
-                }
+                commands.push(format!("$${}", normalized));
             }
         }
 
-        parser_state.finalize()
+        // First pass: extract header and identify layer boundaries
+        let mut header_data: HashMap<String, String> = HashMap::new();
+        let mut metadata = ToolpathMetadata::default();
+        let mut in_header = false;
+        
+        // Collect groups of commands per layer: Vec<(layer_cmd_index, Vec<command_strings>)>
+        let mut layer_groups: Vec<Vec<String>> = Vec::new();
+        let mut current_group: Vec<String> = Vec::new();
+        
+        for cmd in &commands {
+            if cmd.starts_with("$$HEADERSTART") {
+                in_header = true;
+                continue;
+            }
+            if cmd.starts_with("$$HEADEREND") {
+                in_header = false;
+                // Process header
+                if let Some(units) = header_data.get("UNITS") {
+                    let u: String = units.to_uppercase();
+                    if u.contains("INCH") {
+                        // scale handled per-parser instance
+                    }
+                }
+                metadata.format = "CLI".to_string();
+                if let Some(label) = header_data.get("LABEL") {
+                    metadata.properties.insert("label".to_string(), label.clone());
+                }
+                continue;
+            }
+            if in_header {
+                let line = cmd.trim_start_matches("$$");
+                if let Some(idx) = line.find('/') {
+                    let key = line[..idx].trim().to_uppercase();
+                    let value = line[idx + 1..].trim().to_string();
+                    header_data.insert(key, value);
+                }
+                continue;
+            }
+            if cmd.starts_with("$$GEOMETRYSTART") || cmd.starts_with("$$GEOMETRYEND") {
+                continue;
+            }
+            
+            // Check if this is a LAYER command (starts a new group)
+            let upper = cmd.trim_start_matches("$$");
+            let is_layer = upper.starts_with("LAYER/") || upper.starts_with("LAYER ");
+            
+            if is_layer {
+                // Push the previous group if it has content
+                if !current_group.is_empty() {
+                    layer_groups.push(std::mem::take(&mut current_group));
+                }
+            }
+            current_group.push(cmd.clone());
+        }
+        // Push the last group
+        if !current_group.is_empty() {
+            layer_groups.push(current_group);
+        }
+        
+        let scale = self.scale;
+        let hatch_type_override = self.hatch_type_override;
+        let source_label = self.source_label.clone();
+        let global_id_counter = AtomicU64::new(0);
+        let num_groups = layer_groups.len();
+        
+        info!("Parsing {} layer groups in parallel", num_groups);
+        
+        // Parse each layer group in parallel
+        let layers: Vec<Layer> = layer_groups
+            .into_par_iter()
+            .filter_map(|group| {
+                let mut state = CliParserState::new(scale);
+                state.hatch_type_override = hatch_type_override;
+                state.source_label = source_label.clone();
+                
+                for (i, cmd) in group.iter().enumerate() {
+                    if let Err(e) = state.process_line(cmd, i + 1) {
+                        trace!("Parse issue in parallel group: {:?}", e);
+                    }
+                }
+                
+                // Finalize this group's layer
+                if let Some(mut layer) = state.current_layer.take() {
+                    state.attach_params_to_layer(&mut layer);
+                    // Assign globally unique vector IDs
+                    let base_id = global_id_counter.fetch_add(layer.vectors.len() as u64, Ordering::Relaxed);
+                    for (i, vec) in layer.vectors.iter_mut().enumerate() {
+                        vec.id = base_id + i as u64 + 1;
+                    }
+                    Some(layer)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        
+        // Sort layers by Z height and fix indices
+        let mut layers = layers;
+        layers.sort_by(|a, b| a.z_height.partial_cmp(&b.z_height).unwrap());
+        for (i, layer) in layers.iter_mut().enumerate() {
+            layer.index = i;
+        }
+        
+        info!("Parallel parse complete: {} layers", layers.len());
+        
+        let slice_stack = SliceStack::with_layers("CLI File", layers);
+        Ok(Toolpath::with_metadata(slice_stack, metadata))
     }
 }
 
@@ -123,11 +219,11 @@ struct CliParserState {
     hatch_type_override: Option<VectorType>,
     /// Source label for layer parameters
     source_label: Option<String>,
-    /// Current layer power value
-    current_power: Option<f32>,
-    /// Current layer speed value
-    current_speed: Option<f32>,
-    /// Current layer wait times: (hatch_index, wait_time_us)
+    /// Power commands: (start_vector_index, value) - sticky until next index
+    power_commands: Vec<(u32, f32)>,
+    /// Speed commands: (start_vector_index, value) - sticky until next index  
+    speed_commands: Vec<(u32, f32)>,
+    /// Current layer wait times: (vector_index, wait_time_us) - non-sticky
     current_wait_times: Vec<(u32, u32)>,
 }
 
@@ -144,8 +240,8 @@ impl CliParserState {
             vector_id_counter: 0,
             hatch_type_override: None,
             source_label: None,
-            current_power: None,
-            current_speed: None,
+            power_commands: Vec::new(),
+            speed_commands: Vec::new(),
             current_wait_times: Vec::new(),
         }
     }
@@ -248,8 +344,8 @@ impl CliParserState {
             self.layers.push(layer);
         }
         // Reset per-layer state
-        self.current_power = None;
-        self.current_speed = None;
+        self.power_commands.clear();
+        self.speed_commands.clear();
         self.current_wait_times.clear();
 
         // Parse Z height
@@ -303,8 +399,7 @@ impl CliParserState {
         if points.len() >= 2 {
             let mut vector = Vector::new(VectorType::Contour, points);
             vector.id = self.next_vector_id();
-            vector.parameters.power = self.current_power;
-            vector.parameters.speed = self.current_speed;
+            // Power/speed applied later via sticky lookup in attach_params_to_layer
             
             if let Some(ref mut layer) = self.current_layer {
                 layer.add_vector(vector);
@@ -359,8 +454,7 @@ impl CliParserState {
             let points = vec![Point2D::new(x1, y1), Point2D::new(x2, y2)];
             let mut vector = Vector::new(vtype, points);
             vector.id = self.next_vector_id();
-            vector.parameters.power = self.current_power;
-            vector.parameters.speed = self.current_speed;
+            // Power/speed applied later via sticky lookup in attach_params_to_layer
             
             if let Some(ref mut layer) = self.current_layer {
                 layer.add_vector(vector);
@@ -401,8 +495,7 @@ impl CliParserState {
         if points.len() >= 2 {
             let mut vector = Vector::polygon(VectorType::Boundary, points);
             vector.id = self.next_vector_id();
-            vector.parameters.power = self.current_power;
-            vector.parameters.speed = self.current_speed;
+            // Power/speed applied later via sticky lookup in attach_params_to_layer
             
             if let Some(ref mut layer) = self.current_layer {
                 layer.add_vector(vector);
@@ -413,25 +506,37 @@ impl CliParserState {
     }
 
     fn process_powers_command(&mut self, params: &str, _line_num: usize) -> FileResult<()> {
-        // Format: id,value
+        // Format: index,value,index,value,... (sticky: value persists from index until next)
+        // Example: $POWER 5,200,14,170,27,190 means vectors 5-13 have power 200, 14-26 have 170, etc.
         let parts: Vec<&str> = params.split(',').collect();
-        if parts.len() >= 2 {
-            if let Ok(value) = parts[1].trim().parse::<f32>() {
-                self.current_power = Some(value);
-                trace!("Power set to {}", value);
+        let mut i = 0;
+        while i + 1 < parts.len() {
+            if let (Ok(idx), Ok(value)) = (
+                parts[i].trim().parse::<u32>(),
+                parts[i + 1].trim().parse::<f32>(),
+            ) {
+                self.power_commands.push((idx, value));
+                trace!("Power at vector {} set to {}", idx, value);
             }
+            i += 2;
         }
         Ok(())
     }
 
     fn process_speeds_command(&mut self, params: &str, _line_num: usize) -> FileResult<()> {
-        // Format: id,value
+        // Format: index,value,index,value,... (sticky: value persists from index until next)
+        // Example: $SPEED 5,1000,14,800 means vectors 5-13 have speed 1000, 14+ have 800, etc.
         let parts: Vec<&str> = params.split(',').collect();
-        if parts.len() >= 2 {
-            if let Ok(value) = parts[1].trim().parse::<f32>() {
-                self.current_speed = Some(value);
-                trace!("Speed set to {}", value);
+        let mut i = 0;
+        while i + 1 < parts.len() {
+            if let (Ok(idx), Ok(value)) = (
+                parts[i].trim().parse::<u32>(),
+                parts[i + 1].trim().parse::<f32>(),
+            ) {
+                self.speed_commands.push((idx, value));
+                trace!("Speed at vector {} set to {}", idx, value);
             }
+            i += 2;
         }
         Ok(())
     }
@@ -454,20 +559,50 @@ impl CliParserState {
 
     fn attach_params_to_layer(&mut self, layer: &mut Layer) {
         let label = self.source_label.clone().unwrap_or_default();
-        let params = LayerParameters {
-            power: self.current_power,
-            speed: self.current_speed,
-            wait_times: self.current_wait_times.clone(),
-        };
-        // Apply wait times to individual vectors
-        if !self.current_wait_times.is_empty() {
-            for &(idx, time_us) in &self.current_wait_times {
-                if let Some(vec) = layer.vectors.get_mut(idx as usize) {
-                    vec.parameters.wait_time = Some(time_us as f32);
-                }
+        
+        // Sort commands by index for proper sticky lookup
+        self.power_commands.sort_by_key(|&(idx, _)| idx);
+        self.speed_commands.sort_by_key(|&(idx, _)| idx);
+        
+        // Apply sticky power/speed values to each vector based on its index
+        for (vec_idx, vec) in layer.vectors.iter_mut().enumerate() {
+            // Sticky power: find the last command with index <= vec_idx
+            vec.parameters.power = self.get_sticky_value(&self.power_commands, vec_idx as u32);
+            // Sticky speed: find the last command with index <= vec_idx
+            vec.parameters.speed = self.get_sticky_value(&self.speed_commands, vec_idx as u32);
+        }
+        
+        // Apply wait times to individual vectors (non-sticky: only specific indices)
+        for &(idx, time_us) in &self.current_wait_times {
+            if let Some(vec) = layer.vectors.get_mut(idx as usize) {
+                vec.parameters.wait_time = Some(time_us as f32);
             }
         }
+        
+        // Store layer-level parameters for reference
+        // Use the first power/speed value if available (for display purposes)
+        let params = LayerParameters {
+            power: self.power_commands.first().map(|&(_, v)| v),
+            speed: self.speed_commands.first().map(|&(_, v)| v),
+            wait_times: self.current_wait_times.clone(),
+        };
         layer.params.push((label, params));
+    }
+    
+    /// Get the sticky value for a given vector index
+    /// Returns the value from the last command whose index <= vec_idx
+    fn get_sticky_value(&self, commands: &[(u32, f32)], vec_idx: u32) -> Option<f32> {
+        // Commands should be sorted by index
+        // Find the last command with index <= vec_idx
+        let mut result = None;
+        for &(cmd_idx, value) in commands {
+            if cmd_idx <= vec_idx {
+                result = Some(value);
+            } else {
+                break;
+            }
+        }
+        result
     }
 
     fn parse_points(&self, parts: &[&str], n: usize, line_num: usize) -> FileResult<Vec<Point2D>> {
@@ -568,5 +703,77 @@ $$GEOMETRYEND
         
         let layer = toolpath.slice_stack.get_layer(0).unwrap();
         assert_eq!(layer.hatches().len(), 2);
+    }
+
+    #[test]
+    fn test_sticky_power_speed() {
+        // Test that POWER/SPEED values are sticky (persist until next index)
+        // $POWER 2,200,5,170 means: vectors 2-4 have power 200, vectors 5+ have power 170
+        let cli_data = r#"
+$$GEOMETRYSTART
+$$LAYER/0.1
+$$HATCHES/1,8,0,0,10,0,0,5,10,5,0,10,10,10,0,15,10,15,0,20,10,20,0,25,10,25,0,30,10,30,0,35,10,35
+$$POWERS/2,200,5,170
+$$SPEEDS/1,1000,4,800
+$$GEOMETRYEND
+"#;
+
+        let parser = CliParser::new();
+        let toolpath = parser.parse(Cursor::new(cli_data)).unwrap();
+        let layer = toolpath.slice_stack.get_layer(0).unwrap();
+        
+        assert_eq!(layer.vectors.len(), 8);
+        
+        // Vectors 0,1: no power (before index 2)
+        assert_eq!(layer.vectors[0].parameters.power, None);
+        assert_eq!(layer.vectors[1].parameters.power, None);
+        
+        // Vectors 2,3,4: power = 200 (sticky from index 2)
+        assert_eq!(layer.vectors[2].parameters.power, Some(200.0));
+        assert_eq!(layer.vectors[3].parameters.power, Some(200.0));
+        assert_eq!(layer.vectors[4].parameters.power, Some(200.0));
+        
+        // Vectors 5,6,7: power = 170 (sticky from index 5)
+        assert_eq!(layer.vectors[5].parameters.power, Some(170.0));
+        assert_eq!(layer.vectors[6].parameters.power, Some(170.0));
+        assert_eq!(layer.vectors[7].parameters.power, Some(170.0));
+        
+        // Speed: vectors 0: no speed, 1-3: 1000, 4+: 800
+        assert_eq!(layer.vectors[0].parameters.speed, None);
+        assert_eq!(layer.vectors[1].parameters.speed, Some(1000.0));
+        assert_eq!(layer.vectors[2].parameters.speed, Some(1000.0));
+        assert_eq!(layer.vectors[3].parameters.speed, Some(1000.0));
+        assert_eq!(layer.vectors[4].parameters.speed, Some(800.0));
+        assert_eq!(layer.vectors[5].parameters.speed, Some(800.0));
+    }
+
+    #[test]
+    fn test_non_sticky_wait() {
+        // Test that WAIT values are non-sticky (only apply to specific indices)
+        // $WAIT 2,4000,6,8000 means: vector 2 has wait 4000, vector 6 has wait 8000
+        // Vectors 3,4,5 should have NO wait time
+        let cli_data = r#"
+$$GEOMETRYSTART
+$$LAYER/0.1
+$$HATCHES/1,8,0,0,10,0,0,5,10,5,0,10,10,10,0,15,10,15,0,20,10,20,0,25,10,25,0,30,10,30,0,35,10,35
+$$WAIT/2,4000,6,8000
+$$GEOMETRYEND
+"#;
+
+        let parser = CliParser::new();
+        let toolpath = parser.parse(Cursor::new(cli_data)).unwrap();
+        let layer = toolpath.slice_stack.get_layer(0).unwrap();
+        
+        assert_eq!(layer.vectors.len(), 8);
+        
+        // Only vector 2 and 6 should have wait times
+        assert_eq!(layer.vectors[0].parameters.wait_time, None);
+        assert_eq!(layer.vectors[1].parameters.wait_time, None);
+        assert_eq!(layer.vectors[2].parameters.wait_time, Some(4000.0));
+        assert_eq!(layer.vectors[3].parameters.wait_time, None);  // Non-sticky!
+        assert_eq!(layer.vectors[4].parameters.wait_time, None);
+        assert_eq!(layer.vectors[5].parameters.wait_time, None);
+        assert_eq!(layer.vectors[6].parameters.wait_time, Some(8000.0));
+        assert_eq!(layer.vectors[7].parameters.wait_time, None);
     }
 }

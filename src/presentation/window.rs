@@ -111,6 +111,7 @@ pub fn create_window(
     let window_builder = WindowBuilder::new()
         .with_title(&config.title)
         .with_inner_size(LogicalSize::new(config.width, config.height))
+        .with_min_inner_size(LogicalSize::new(800u32, 500u32))
         .with_resizable(true);
 
     // Configure OpenGL
@@ -136,6 +137,19 @@ pub fn create_window(
         .map_err(|e| anyhow::anyhow!("Failed to build display: {}", e))?;
 
     let window = window.expect("Window should be created");
+
+    // Set window icon from embedded PNG
+    {
+        let icon_bytes = include_bytes!("assets/logo.png");
+        if let Ok(img) = image::load_from_memory(icon_bytes) {
+            let rgba = img.to_rgba8();
+            let (w, h) = rgba.dimensions();
+            if let Ok(icon) = winit::window::Icon::from_rgba(rgba.into_raw(), w, h) {
+                window.set_window_icon(Some(icon));
+            }
+        }
+    }
+
     let raw_window_handle = window.raw_window_handle();
 
     // Create GL context
@@ -301,6 +315,7 @@ where
                                 Key::Named(NamedKey::Home) => "home",
                                 Key::Named(NamedKey::End) => "end",
                                 Key::Named(NamedKey::Escape) => "escape",
+                                Key::Named(NamedKey::F1) => "f1",
                                 Key::Character(c) => c.as_str(),
                                 _ => "",
                             };
