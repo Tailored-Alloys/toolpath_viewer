@@ -55,6 +55,22 @@ const STAR_RADIUS_MIN: f32 = 0.015;
 /// Maximum star marker radius (world units, mm) — prevents oversized wait time markers.
 const STAR_RADIUS_MAX: f32 = 0.12;
 
+/// Generate per-vertex gradient colors for a polyline, fading from transparent
+/// at the start to the full color at the end to indicate scan direction.
+fn progress_gradient(points: &[Point2D], color: &Color) -> Vec<Color> {
+    let n = points.len();
+    if n < 2 {
+        return vec![*color; n];
+    }
+    (0..n)
+        .map(|i| {
+            let t = i as f32 / (n - 1) as f32; // 0.0 at start, 1.0 at end
+            let alpha = color.a * (0.3 + 0.7 * t); // fade from 30% to 100%
+            color.with_alpha(alpha)
+        })
+        .collect()
+}
+
 /// Add an arrowhead to `batch` at `tip` pointing in direction (`dx`, `dy`).
 /// `arm_len` controls the size of the arrow arms.
 fn add_arrowhead(batch: &mut LineBatch, tip: &Point2D, dx: f32, dy: f32, arm_len: f32, color: &Color) {
@@ -122,6 +138,8 @@ fn compute_marker_size(layer: &Layer) -> f32 {
 pub struct GlRenderer {
     width: u32,
     height: u32,
+    /// DPI scale factor (physical pixels per logical pixel)
+    scale_factor: f32,
     /// Horizontal offset for centering (to account for UI panel)
     view_offset_x: f32,
     /// Vertical offset for centering (to account for top toolbar)
@@ -150,6 +168,7 @@ impl GlRenderer {
         Self {
             width: 800,
             height: 600,
+            scale_factor: 1.0,
             view_offset_x: 0.0,
             view_offset_y: 0.0,
             shader: None,
@@ -182,6 +201,11 @@ impl GlRenderer {
         self.view_offset_y = offset;
     }
 
+    /// Set DPI scale factor for correct projection on HiDPI displays
+    pub fn set_scale_factor(&mut self, factor: f32) {
+        self.scale_factor = factor;
+    }
+
     /// Render the background grid before layer content.
     pub fn render_grid(&mut self, view: &ViewState) -> RenderResult<()> {
         let shader = self.shader.as_ref().ok_or_else(|| {
@@ -190,8 +214,12 @@ impl GlRenderer {
 
         shader.use_program();
 
-        let half_w = (self.width as f32) / 2.0;
-        let half_h = (self.height as f32) / 2.0;
+        // Use logical pixels for projection (physical / scale_factor)
+        // gl::Viewport remains in physical pixels; projection defines the coordinate system
+        let logical_w = self.width as f32 / self.scale_factor;
+        let logical_h = self.height as f32 / self.scale_factor;
+        let half_w = logical_w / 2.0;
+        let half_h = logical_h / 2.0;
         let off_x = self.view_offset_x;
         let off_y = self.view_offset_y;
         let projection = ortho(-half_w + off_x, half_w + off_x, -half_h + off_y, half_h + off_y, -1.0, 1.0);
@@ -199,8 +227,8 @@ impl GlRenderer {
         let view_mat = view_matrix(view);
         shader.set_mat4("uView", &view_mat);
 
-        let viewport_w = self.width as f32;
-        let viewport_h = self.height as f32;
+        let viewport_w = logical_w;
+        let viewport_h = logical_h;
         self.grid_renderer.prepare(view, viewport_w, viewport_h);
         self.grid_renderer.render();
 
@@ -281,7 +309,8 @@ impl GlRenderer {
             None => layer.vectors.len(),
         };
 
-        for vector in &layer.vectors[..vector_limit] {
+        for (vec_idx, vector) in layer.vectors.iter().enumerate() {
+            let is_active = vec_idx < vector_limit;
             // Determine color: parameter gradient when a mode is active, else type-based
             let color = if let Some(param_mode) = options.param_mode {
                 let param_value = match param_mode {
@@ -308,40 +337,78 @@ impl GlRenderer {
                 *self.color_scheme.color_for_type(vector.vector_type)
             };
 
+            // Mute future vectors when vector-by-vector view is active
+            let color = if !is_active && options.max_vector_index.is_some() {
+                color.with_alpha(0.15)
+            } else {
+                color
+            };
+
             // Track whether this vector is visible (for arrow/marker placement)
             let mut visible = false;
+
+            // Use gradient coloring for active vectors in vector view mode
+            let use_gradient = is_active && options.max_vector_index.is_some();
 
             match vector.vector_type {
                 VectorType::Boundary => {
                     if options.show_slices {
-                        self.boundary_batch.add_polyline(&vector.points, &color);
+                        if use_gradient && vector.points.len() >= 2 {
+                            let colors = progress_gradient(&vector.points, &color);
+                            self.boundary_batch.add_polyline_colored(&vector.points, &colors);
+                        } else {
+                            self.boundary_batch.add_polyline(&vector.points, &color);
+                        }
                         visible = true;
                     }
                 }
                 VectorType::Contour | VectorType::BaseContour | VectorType::CoincidingContour => {
                     if options.show_contours {
-                        self.contour_batch.add_polyline(&vector.points, &color);
+                        if use_gradient && vector.points.len() >= 2 {
+                            let colors = progress_gradient(&vector.points, &color);
+                            self.contour_batch.add_polyline_colored(&vector.points, &colors);
+                        } else {
+                            self.contour_batch.add_polyline(&vector.points, &color);
+                        }
                         visible = true;
                     }
                 }
                 VectorType::DepthContour => {
                     if options.show_depth_contours {
-                        self.contour_batch.add_polyline(&vector.points, &color);
+                        if use_gradient && vector.points.len() >= 2 {
+                            let colors = progress_gradient(&vector.points, &color);
+                            self.contour_batch.add_polyline_colored(&vector.points, &colors);
+                        } else {
+                            self.contour_batch.add_polyline(&vector.points, &color);
+                        }
                         visible = true;
                     }
                 }
                 VectorType::Hatch => {
                     if options.show_hatches && vector.points.len() >= 2 {
-                        self.hatch_batch.add_line(
-                            &vector.points[0],
-                            &vector.points[1],
-                            &color,
-                        );
+                        if use_gradient {
+                            let start_color = color.with_alpha(color.a * 0.3);
+                            self.hatch_batch.add_line_gradient(
+                                &vector.points[0], &start_color,
+                                &vector.points[1], &color,
+                            );
+                        } else {
+                            self.hatch_batch.add_line(
+                                &vector.points[0],
+                                &vector.points[1],
+                                &color,
+                            );
+                        }
                         visible = true;
                     }
                 }
                 VectorType::Support | VectorType::Travel => {
-                    self.contour_batch.add_polyline(&vector.points, &color);
+                    if use_gradient && vector.points.len() >= 2 {
+                        let colors = progress_gradient(&vector.points, &color);
+                        self.contour_batch.add_polyline_colored(&vector.points, &colors);
+                    } else {
+                        self.contour_batch.add_polyline(&vector.points, &color);
+                    }
                     visible = true;
                 }
             }
@@ -350,7 +417,8 @@ impl GlRenderer {
                 continue;
             }
 
-            // --- Direction arrows ---
+            // --- Direction arrows (only for active vectors) ---
+            if !is_active { continue; }
             if options.show_arrows && vector.points.len() >= 2 {
                 match vector.vector_type {
                     VectorType::Hatch => {
@@ -440,10 +508,12 @@ impl GlRenderer {
 
         shader.use_program();
 
-        // Set up projection matrix (screen space, origin at center)
-        // Apply offsets to shift content away from UI panels
-        let half_w = (self.width as f32) / 2.0;
-        let half_h = (self.height as f32) / 2.0;
+        // Set up projection matrix in logical pixels (physical / scale_factor)
+        // This keeps the projection in the same coordinate system as egui and ViewState
+        let logical_w = self.width as f32 / self.scale_factor;
+        let logical_h = self.height as f32 / self.scale_factor;
+        let half_w = logical_w / 2.0;
+        let half_h = logical_h / 2.0;
         let off_x = self.view_offset_x;
         let off_y = self.view_offset_y;
         let projection = ortho(-half_w + off_x, half_w + off_x, -half_h + off_y, half_h + off_y, -1.0, 1.0);
@@ -461,7 +531,7 @@ impl GlRenderer {
             info!("View: center=({:.3}, {:.3}), zoom={:.4}", view.center.x, view.center.y, view.zoom);
             info!("Projection: L={:.1}, R={:.1}, B={:.1}, T={:.1}",
                 -half_w + off_x, half_w + off_x, -half_h + off_y, half_h + off_y);
-            info!("Renderer: {}x{}, offset_x={}, offset_y={}", self.width, self.height, off_x, off_y);
+            info!("Renderer: {}x{} (logical {:.0}x{:.0}), scale={:.2}, offset_x={}, offset_y={}", self.width, self.height, logical_w, logical_h, self.scale_factor, off_x, off_y);
             unsafe {
                 let err = gl::GetError();
                 if err != gl::NO_ERROR {

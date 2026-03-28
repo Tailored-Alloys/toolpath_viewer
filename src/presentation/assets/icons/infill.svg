@@ -2,9 +2,9 @@
 <!-- Created with Inkscape (http://www.inkscape.org/) -->
 
 <svg
-   width="23.166664mm"
-   height="23.166668mm"
-   viewBox="0 0 23.166664 23.166668"
+   width="21.589619mm"
+   height="21.589399mm"
+   viewBox="0 0 21.589619 21.589399"
    version="1.1"
    id="svg1"
    inkscape:export-filename="play-path.svg"
@@ -38,8 +38,8 @@
      inkscape:current-layer="layer1"><inkscape:grid
        id="grid1"
        units="px"
-       originx="25.992699"
-       originy="-50.701008"
+       originx="24.795172"
+       originy="-1.0702286"
        spacingx="0.26458333"
        spacingy="0.26458333"
        empcolor="#0099e5"
@@ -50,9 +50,9 @@
        enabled="true"
        visible="true" /><inkscape:page
        x="0"
-       y="0"
-       width="23.166664"
-       height="23.166668"
+       y="8.2616835e-23"
+       width="21.589619"
+       height="21.589397"
        id="page2"
        margin="0"
        bleed="0" /></sodipodi:namedview><defs
@@ -60,16 +60,16 @@
      inkscape:label="Layer 1"
      inkscape:groupmode="layer"
      id="layer1"
-     transform="translate(25.992699,-50.701008)"><rect
-       style="opacity:1;fill:none;fill-opacity:1;stroke:#ffffff;stroke-width:2;stroke-linecap:round;stroke-linejoin:round;stroke-dasharray:none;stroke-dashoffset:0;stroke-opacity:1"
-       id="rect4"
-       width="21.166666"
-       height="21.166666"
-       x="-24.992699"
-       y="51.701008" /><rect
-       style="opacity:1;fill:none;fill-opacity:1;stroke:#ffffff;stroke-width:2;stroke-linecap:round;stroke-linejoin:round;stroke-dasharray:none;stroke-dashoffset:0;stroke-opacity:1"
-       id="rect5"
-       width="12.087083"
-       height="12.087083"
-       x="-20.452908"
-       y="56.240799" /></g></svg>
+     transform="translate(24.795172,-1.0702261)"><path
+       style="opacity:1;fill:#ffffff;fill-opacity:1;stroke:#ffffff;stroke-width:2;stroke-linecap:round;stroke-linejoin:round;stroke-dasharray:none;stroke-dashoffset:0;stroke-opacity:1"
+       d="M -23.795171,21.659628 -4.2055506,2.0702291"
+       id="path1"
+       inkscape:export-filename="D:\Daniyal\Local_Workspace\CoreRD\toolpath_viewer\src\presentation\assets\icons\infill.svg"
+       inkscape:export-xdpi="96"
+       inkscape:export-ydpi="96" /><path
+       style="opacity:1;fill:#ffffff;fill-opacity:1;stroke:#ffffff;stroke-width:2;stroke-linecap:round;stroke-linejoin:round;stroke-dasharray:none;stroke-dashoffset:0;stroke-opacity:1"
+       d="m -23.795171,9.9275084 7.857368,-7.8572793"
+       id="path3" /><path
+       style="opacity:1;fill:#ffffff;fill-opacity:1;stroke:#ffffff;stroke-width:2;stroke-linecap:round;stroke-linejoin:round;stroke-dasharray:none;stroke-dashoffset:0;stroke-opacity:1"
+       d="m -12.146567,21.659628 7.9410164,-7.940927"
+       id="path4" /></g></svg>

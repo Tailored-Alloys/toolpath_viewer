@@ -157,5 +157,14 @@ pub fn show_controls_popup(ctx: &Context) {
                     ui.end_row();
                 }
             });
+
+        ui.add_space(8.0);
+        ui.separator();
+        ui.add_space(4.0);
+        ui.label(
+            RichText::new(format!("{} | {}", crate::APP_DEVELOPER, crate::APP_VERSION))
+                .size(10.0)
+                .color(TEXT_SECONDARY),
+        );
     });
 }

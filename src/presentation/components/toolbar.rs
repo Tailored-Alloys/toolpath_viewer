@@ -24,19 +24,13 @@ pub fn show_toolbar(
     compact: bool,
     // Mutable visibility state
     show_contours: &mut bool,
-    show_hatches: &mut bool,
+    show_infills: &mut bool,
     show_arrows: &mut bool,
-    show_wait_markers: &mut bool,
-    show_scale_bar: &mut bool,
     show_vector_view: &mut bool,
     param_mode: &mut Option<ParameterMode>,
     show_file_info: &mut bool,
     show_controls: &mut bool,
     global_units: &mut GlobalUnits,
-    // Read-only display state
-    current_layer: usize,
-    total_layers: usize,
-    current_z: f32,
 ) -> ToolbarOutput {
     let mut output = ToolbarOutput::default();
 
@@ -74,31 +68,31 @@ pub fn show_toolbar(
                 ui.separator();
                 ui.add_space(8.0);
 
-                // ── Visibility toggles (using Lucide icons) ──
-                let icon_contour = &LucideIcon::Spline.unicode().to_string();
-                let icon_hatch = &LucideIcon::ScanLine.unicode().to_string();
+                // ── Visibility toggles ──
                 let icon_arrow = &LucideIcon::Navigation2.unicode().to_string();
-                let icon_clock = &LucideIcon::Clock.unicode().to_string();
-                toolbar_toggle(ui, icon_contour, show_contours, "Toggle Contours (C)");
-                toolbar_toggle(ui, icon_hatch, show_hatches, "Toggle Hatches (H)");
-                toolbar_toggle(ui, icon_arrow, show_arrows, "Toggle Direction Arrows (A)");
-                toolbar_toggle(
-                    ui,
-                    icon_clock,
-                    show_wait_markers,
-                    "Toggle Wait Time Markers (T)",
-                );
-                let icon_scale = &LucideIcon::RulerDimensionLine.unicode().to_string();
-                toolbar_toggle(ui, icon_scale, show_scale_bar, "Toggle Scale Bar (V)");
                 toolbar_toggle_image(
                     ui,
                     egui::ImageSource::Bytes {
-                        uri: "bytes://hatch-time.svg".into(),
-                        bytes: egui::load::Bytes::Static(include_bytes!("../assets/icons/hatch-time.svg")),
+                        uri: "bytes://contour.svg".into(),
+                        bytes: egui::load::Bytes::Static(include_bytes!("../assets/icons/contour.svg")),
                     },
-                    show_vector_view,
-                    "Toggle Vector View (N)",
+                    show_contours,
+                    "Toggle Contours (C)",
                 );
+                toolbar_toggle_image(
+                    ui,
+                    egui::ImageSource::Bytes {
+                        uri: "bytes://infill.svg".into(),
+                        bytes: egui::load::Bytes::Static(include_bytes!("../assets/icons/infill.svg")),
+                    },
+                    show_infills,
+                    "Toggle Infills (H)",
+                );
+                toolbar_toggle(ui, icon_arrow, show_arrows, "Toggle Direction Arrows (A)");
+                // Wait markers toggle removed — shown when WaitTime param mode is active
+                // Scale bar toggle removed — always visible
+                let icon_play = &LucideIcon::Play.unicode().to_string();
+                toolbar_toggle(ui, icon_play, show_vector_view, "Toggle Vector View (N)");
 
                 ui.add_space(8.0);
                 ui.separator();
@@ -106,7 +100,7 @@ pub fn show_toolbar(
 
                 // ── Parameter mode selector ──
                 if !compact {
-                    ui.label(RichText::new("Color:").size(12.0).color(TEXT_SECONDARY));
+                    ui.label(RichText::new("Parameters:").size(12.0).color(TEXT_SECONDARY));
                 }
                 let modes = [
                     (None, "None", "No parameter coloring (1)"),
@@ -242,27 +236,6 @@ pub fn show_toolbar(
                 {
                     *show_controls = !*show_controls;
                 }
-
-                // ── Layer info on the right side ──
-                ui.with_layout(
-                    egui::Layout::right_to_left(egui::Align::Center),
-                    |ui| {
-                        if total_layers > 0 {
-                            let z_display = global_units.length.from_mm(current_z);
-                            ui.label(
-                                RichText::new(format!(
-                                    "Layer {}/{}  •  Z = {:.3} {}",
-                                    current_layer + 1,
-                                    total_layers,
-                                    z_display,
-                                    global_units.length.label()
-                                ))
-                                .size(12.0)
-                                .color(TEXT_SECONDARY),
-                            );
-                        }
-                    },
-                );
             });
         });
 

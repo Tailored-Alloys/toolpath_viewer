@@ -75,6 +75,8 @@ pub enum InputAction {
     NextVector,
     /// Previous vector (when vector view active)
     PrevVector,
+    /// Toggle vector playback (play/pause)
+    ToggleVectorPlayback,
     /// Quit application
     Quit,
 }
@@ -165,6 +167,7 @@ pub fn key_to_action(key: &str, ctrl: bool, shift: bool) -> Option<InputAction> 
         ("n", false, false) => Some(InputAction::ToggleVectorView),
         ("right", false, false) => Some(InputAction::NextVector),
         ("left", false, false) => Some(InputAction::PrevVector),
+        ("space", false, false) => Some(InputAction::ToggleVectorPlayback),
 
         // Tools
         ("m", false, false) => Some(InputAction::ToggleRuler),

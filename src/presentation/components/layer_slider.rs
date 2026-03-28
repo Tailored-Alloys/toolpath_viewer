@@ -8,6 +8,7 @@
 use egui::{Color32, Context, DragValue, RichText, Rounding, Stroke};
 use lucide_icons::Icon as LucideIcon;
 
+use crate::application::ports::GlobalUnits;
 use crate::presentation::layout::LayerSliderRegion;
 use crate::presentation::theme::*;
 
@@ -24,6 +25,8 @@ pub fn show_layer_slider(
     region: &LayerSliderRegion,
     current_layer: usize,
     total_layers: usize,
+    current_z: f32,
+    global_units: &GlobalUnits,
 ) -> LayerSliderOutput {
     let mut output = LayerSliderOutput::default();
     let max_layer = total_layers.saturating_sub(1);
@@ -202,28 +205,40 @@ pub fn show_layer_slider(
 
                     // Go to section (hidden on small windows)
                     if region.show_goto {
-                        let goto_label_y = first_btn_y + btn_h / 2.0 + spacing + 8.0;
-                        ui.painter().text(
-                            egui::pos2(center_x, goto_label_y),
-                            egui::Align2::CENTER_CENTER,
-                            "Go to",
-                            egui::FontId::proportional(10.0),
-                            TEXT_SECONDARY,
-                        );
+                        let goto_y = first_btn_y + btn_h / 2.0 + spacing;
 
-                        let jump_rect = egui::Rect::from_center_size(
-                            egui::pos2(center_x, goto_label_y + 18.0),
+                        // Input field showing "current/total" with editable current
+                        let input_rect = egui::Rect::from_center_size(
+                            egui::pos2(center_x, goto_y + 11.0),
                             egui::vec2(56.0, 22.0),
                         );
                         let mut jump_val = (current_layer + 1) as i64;
                         let dv = DragValue::new(&mut jump_val)
                             .clamp_range(1..=(total_layers as i64))
-                            .speed(1.0);
-                        if ui.put(jump_rect, dv).changed() {
+                            .speed(1.0)
+                            .suffix(format!("/{}", total_layers));
+                        if ui.put(input_rect, dv).changed() {
                             output.new_layer = (jump_val as usize)
                                 .saturating_sub(1)
                                 .min(total_layers.saturating_sub(1));
                             output.layer_changed = true;
+                        }
+
+                        // Z value below input field
+                        if total_layers > 0 {
+                            let z_display = global_units.length.from_mm(current_z);
+                            let z_text = format!(
+                                "Z = {:.3} {}",
+                                z_display,
+                                global_units.length.label()
+                            );
+                            ui.painter().text(
+                                egui::pos2(center_x, goto_y + 28.0),
+                                egui::Align2::CENTER_TOP,
+                                &z_text,
+                                egui::FontId::proportional(9.0),
+                                TEXT_SECONDARY,
+                            );
                         }
                     }
                 });

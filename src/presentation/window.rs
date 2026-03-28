@@ -36,7 +36,7 @@ pub struct WindowConfig {
 impl Default for WindowConfig {
     fn default() -> Self {
         Self {
-            title: "Toolpath Viewer".to_string(),
+            title: format!("Toolpath Viewer [{}]", crate::APP_VERSION),
             width: 1280,
             height: 720,
             vsync: true,
@@ -74,13 +74,21 @@ pub struct AppWindow {
     pub gl_context: PossiblyCurrentContext,
     pub glow_context: Arc<glow::Context>,
     pub input_state: InputState,
+    /// Current DPI scale factor (physical pixels per logical pixel)
+    pub scale_factor: f32,
 }
 
 impl AppWindow {
-    /// Get current window size
+    /// Get current window size in physical pixels
     pub fn size(&self) -> (u32, u32) {
         let size = self.window.inner_size();
         (size.width, size.height)
+    }
+
+    /// Get current window size in logical pixels (DPI-independent)
+    pub fn logical_size(&self) -> (f32, f32) {
+        let size = self.window.inner_size();
+        (size.width as f32 / self.scale_factor, size.height as f32 / self.scale_factor)
     }
 
     /// Swap buffers
@@ -207,12 +215,15 @@ pub fn create_window(
         gl_surface.set_swap_interval(&gl_context, glutin::surface::SwapInterval::Wait(NonZeroU32::new(1).unwrap()))?;
     }
 
+    let scale_factor = window.scale_factor() as f32;
+
     Ok(AppWindow {
         window,
         gl_surface,
         gl_context,
         glow_context,
         input_state: InputState::new(),
+        scale_factor,
     })
 }
 
@@ -259,13 +270,13 @@ where
                     }
 
                     WindowEvent::CursorMoved { ref position, .. } => {
-                        app_window.input_state.update_mouse(
-                            position.x as f32,
-                            position.y as f32,
-                        );
+                        // Convert physical pixel coords to logical for consistent coordinate system
+                        let lx = position.x as f32 / app_window.scale_factor;
+                        let ly = position.y as f32 / app_window.scale_factor;
+                        app_window.input_state.update_mouse(lx, ly);
                         event_handler(&mut app_window, AppEvent::MouseMove {
-                            x: position.x as f32,
-                            y: position.y as f32,
+                            x: lx,
+                            y: ly,
                         }, raw_event);
                     }
 

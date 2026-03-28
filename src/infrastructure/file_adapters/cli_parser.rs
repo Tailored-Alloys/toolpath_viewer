@@ -225,6 +225,14 @@ struct CliParserState {
     speed_commands: Vec<(u32, f32)>,
     /// Current layer wait times: (vector_index, wait_time_us) - non-sticky
     current_wait_times: Vec<(u32, u32)>,
+    /// Pending power commands before the next geometry block
+    pending_powers: Vec<(u32, f32)>,
+    /// Pending speed commands before the next geometry block
+    pending_speeds: Vec<(u32, f32)>,
+    /// Pending wait times before the next geometry block
+    pending_waits: Vec<(u32, u32)>,
+    /// Start index (in layer.vectors) of the most recent geometry block
+    last_block_start: usize,
 }
 
 impl CliParserState {
@@ -243,6 +251,10 @@ impl CliParserState {
             power_commands: Vec::new(),
             speed_commands: Vec::new(),
             current_wait_times: Vec::new(),
+            pending_powers: Vec::new(),
+            pending_speeds: Vec::new(),
+            pending_waits: Vec::new(),
+            last_block_start: 0,
         }
     }
 
@@ -347,6 +359,10 @@ impl CliParserState {
         self.power_commands.clear();
         self.speed_commands.clear();
         self.current_wait_times.clear();
+        self.pending_powers.clear();
+        self.pending_speeds.clear();
+        self.pending_waits.clear();
+        self.last_block_start = 0;
 
         // Parse Z height
         let z: f32 = params
@@ -365,6 +381,9 @@ impl CliParserState {
     }
 
     fn process_polyline_command(&mut self, params: &str, line_num: usize) -> FileResult<()> {
+        // Flush any pending parameter commands, offsetting indices to this block's start
+        self.flush_pending_params();
+
         // Format: id,dir,n,x1,y1,x2,y2,...
         let parts: Vec<&str> = params.split(',').collect();
         
@@ -410,6 +429,9 @@ impl CliParserState {
     }
 
     fn process_hatches_command(&mut self, params: &str, line_num: usize) -> FileResult<()> {
+        // Flush any pending parameter commands, offsetting indices to this block's start
+        self.flush_pending_params();
+
         // Format: id,n,x1,y1,x2,y2,... (pairs of points forming individual lines)
         let parts: Vec<&str> = params.split(',').collect();
         
@@ -472,6 +494,9 @@ impl CliParserState {
     }
 
     fn process_boundary_command(&mut self, params: &str, line_num: usize) -> FileResult<()> {
+        // Flush any pending parameter commands, offsetting indices to this block's start
+        self.flush_pending_params();
+
         // Same format as polyline but creates boundary type
         let parts: Vec<&str> = params.split(',').collect();
         
@@ -515,8 +540,8 @@ impl CliParserState {
                 parts[i].trim().parse::<u32>(),
                 parts[i + 1].trim().parse::<f32>(),
             ) {
-                self.power_commands.push((idx, value));
-                trace!("Power at vector {} set to {}", idx, value);
+                self.pending_powers.push((idx, value));
+                trace!("Power at vector {} set to {} (pending)", idx, value);
             }
             i += 2;
         }
@@ -533,8 +558,8 @@ impl CliParserState {
                 parts[i].trim().parse::<u32>(),
                 parts[i + 1].trim().parse::<f32>(),
             ) {
-                self.speed_commands.push((idx, value));
-                trace!("Speed at vector {} set to {}", idx, value);
+                self.pending_speeds.push((idx, value));
+                trace!("Speed at vector {} set to {} (pending)", idx, value);
             }
             i += 2;
         }
@@ -550,14 +575,45 @@ impl CliParserState {
                 parts[i].trim().parse::<u32>(),
                 parts[i + 1].trim().parse::<u32>(),
             ) {
-                self.current_wait_times.push((idx, time));
+                self.pending_waits.push((idx, time));
             }
             i += 2;
         }
         Ok(())
     }
 
+    /// Flush pending parameter commands into the main lists, offsetting
+    /// block-local indices by the current block start position in the layer.
+    fn flush_pending_params(&mut self) {
+        let block_start = self.current_layer.as_ref().map_or(0, |l| l.vectors.len());
+        self.last_block_start = block_start;
+
+        for (idx, value) in self.pending_powers.drain(..) {
+            self.power_commands.push((idx + block_start as u32, value));
+        }
+        for (idx, value) in self.pending_speeds.drain(..) {
+            self.speed_commands.push((idx + block_start as u32, value));
+        }
+        for (idx, time) in self.pending_waits.drain(..) {
+            self.current_wait_times.push((idx + block_start as u32, time));
+        }
+    }
+
     fn attach_params_to_layer(&mut self, layer: &mut Layer) {
+        // Flush any remaining pending params (e.g. POWERS/SPEEDS/WAIT after the last geometry block)
+        if !self.pending_powers.is_empty() || !self.pending_speeds.is_empty() || !self.pending_waits.is_empty() {
+            let block_start = self.last_block_start;
+            for (idx, value) in self.pending_powers.drain(..) {
+                self.power_commands.push((idx + block_start as u32, value));
+            }
+            for (idx, value) in self.pending_speeds.drain(..) {
+                self.speed_commands.push((idx + block_start as u32, value));
+            }
+            for (idx, time) in self.pending_waits.drain(..) {
+                self.current_wait_times.push((idx + block_start as u32, time));
+            }
+        }
+
         let label = self.source_label.clone().unwrap_or_default();
         
         // Sort commands by index for proper sticky lookup
@@ -774,6 +830,66 @@ $$GEOMETRYEND
         assert_eq!(layer.vectors[4].parameters.wait_time, None);
         assert_eq!(layer.vectors[5].parameters.wait_time, None);
         assert_eq!(layer.vectors[6].parameters.wait_time, Some(8000.0));
+        assert_eq!(layer.vectors[7].parameters.wait_time, None);
+    }
+
+    #[test]
+    fn test_multi_block_powers_speeds_waits() {
+        // Two hatch blocks in the same layer, each preceded by distinct POWERS/SPEEDS/WAIT.
+        // Block-local indices must be offset to global vector positions.
+        let cli_data = r#"
+$$GEOMETRYSTART
+$$LAYER/0.1
+$$POWERS/0,100,2,200
+$$SPEEDS/0,500,2,1000
+$$WAIT/1,3000
+$$HATCHES/1,4,0,0,1,0,1,0,2,0,2,0,3,0,3,0,4,0
+$$POWERS/0,300,2,400
+$$SPEEDS/0,750,2,1500
+$$WAIT/1,6000
+$$HATCHES/1,4,10,0,11,0,11,0,12,0,12,0,13,0,13,0,14,0
+$$GEOMETRYEND
+"#;
+
+        let parser = CliParser::new();
+        let toolpath = parser.parse(Cursor::new(cli_data)).unwrap();
+        let layer = toolpath.slice_stack.get_layer(0).unwrap();
+
+        // 4 + 4 = 8 vectors total
+        assert_eq!(layer.vectors.len(), 8);
+
+        // Block 1 (global indices 0-3): power 100 at 0-1, 200 at 2-3
+        assert_eq!(layer.vectors[0].parameters.power, Some(100.0));
+        assert_eq!(layer.vectors[1].parameters.power, Some(100.0));
+        assert_eq!(layer.vectors[2].parameters.power, Some(200.0));
+        assert_eq!(layer.vectors[3].parameters.power, Some(200.0));
+
+        // Block 2 (global indices 4-7): power 300 at 4-5, 400 at 6-7
+        assert_eq!(layer.vectors[4].parameters.power, Some(300.0));
+        assert_eq!(layer.vectors[5].parameters.power, Some(300.0));
+        assert_eq!(layer.vectors[6].parameters.power, Some(400.0));
+        assert_eq!(layer.vectors[7].parameters.power, Some(400.0));
+
+        // Block 1 speeds: 500 at 0-1, 1000 at 2-3
+        assert_eq!(layer.vectors[0].parameters.speed, Some(500.0));
+        assert_eq!(layer.vectors[1].parameters.speed, Some(500.0));
+        assert_eq!(layer.vectors[2].parameters.speed, Some(1000.0));
+        assert_eq!(layer.vectors[3].parameters.speed, Some(1000.0));
+
+        // Block 2 speeds: 750 at 4-5, 1500 at 6-7
+        assert_eq!(layer.vectors[4].parameters.speed, Some(750.0));
+        assert_eq!(layer.vectors[5].parameters.speed, Some(750.0));
+        assert_eq!(layer.vectors[6].parameters.speed, Some(1500.0));
+        assert_eq!(layer.vectors[7].parameters.speed, Some(1500.0));
+
+        // Wait: block 1 index 1 -> global 1, block 2 index 1 -> global 5
+        assert_eq!(layer.vectors[0].parameters.wait_time, None);
+        assert_eq!(layer.vectors[1].parameters.wait_time, Some(3000.0));
+        assert_eq!(layer.vectors[2].parameters.wait_time, None);
+        assert_eq!(layer.vectors[3].parameters.wait_time, None);
+        assert_eq!(layer.vectors[4].parameters.wait_time, None);
+        assert_eq!(layer.vectors[5].parameters.wait_time, Some(6000.0));
+        assert_eq!(layer.vectors[6].parameters.wait_time, None);
         assert_eq!(layer.vectors[7].parameters.wait_time, None);
     }
 }

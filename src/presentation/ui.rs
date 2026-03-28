@@ -151,6 +151,8 @@ pub struct UiOutput {
     pub vector_view_enabled: bool,
     /// Current vector index (0-based) when vector view is active
     pub vector_index: usize,
+    /// Whether vector playback is active
+    pub vector_view_playing: bool,
 }
 
 /// Vector count info for display
@@ -217,12 +219,18 @@ pub struct UiState {
     pub loading_file: Option<String>,
     /// Hover information for vector tooltip
     pub hover_info: Option<HoverInfo>,
-    /// Whether vector-by-vector view mode is enabled
+    /// Whether vector-by-vector view is enabled
     pub vector_view_enabled: bool,
     /// Current vector index within the layer
     pub current_vector_index: usize,
     /// Total vectors in the current layer
     pub total_vectors_in_layer: usize,
+    /// Whether vector-by-vector playback is active
+    pub vector_view_playing: bool,
+    /// Accumulated real time (seconds) for playback advancement
+    pub playback_time_accumulator: f64,
+    /// Playback speed multiplier (e.g. 0.5, 1.0, 2.0, 5.0)
+    pub playback_speed: f32,
 }
 
 impl Default for UiState {
@@ -254,7 +262,20 @@ impl Default for UiState {
             vector_view_enabled: false,
             current_vector_index: 0,
             total_vectors_in_layer: 0,
+            vector_view_playing: false,
+            playback_time_accumulator: 0.0,
+            playback_speed: 1.0,
         }
+    }
+}
+
+impl UiState {
+    /// Reset all state to defaults for a new file load, preserving user
+    /// preferences like global_units.
+    pub fn reset_for_new_file(&mut self) {
+        let preserved_units = self.global_units.clone();
+        *self = UiState::default();
+        self.global_units = preserved_units;
     }
 }
 
@@ -381,16 +402,11 @@ impl UiRenderer {
                 &mut self.state.show_contours,
                 &mut self.state.show_hatches,
                 &mut self.state.show_arrows,
-                &mut self.state.show_wait_markers,
-                &mut self.state.tool_state.show_scale_bar,
                 &mut self.state.vector_view_enabled,
                 &mut self.state.param_mode,
                 &mut self.state.show_file_info,
                 &mut self.state.show_controls,
                 &mut self.state.global_units,
-                self.state.current_layer,
-                self.state.total_layers,
-                self.state.current_z,
             );
             open_file_requested = toolbar_out.open_file_requested;
 
@@ -419,6 +435,8 @@ impl UiRenderer {
                     slider_region,
                     self.state.current_layer,
                     self.state.total_layers,
+                    self.state.current_z,
+                    &self.state.global_units,
                 );
                 if slider_out.layer_changed {
                     layer_changed = true;
@@ -433,10 +451,22 @@ impl UiRenderer {
                     vs_region,
                     self.state.current_vector_index,
                     self.state.total_vectors_in_layer,
+                    self.state.vector_view_playing,
+                    &mut self.state.playback_speed,
                 );
                 if vs_out.vector_changed {
                     vector_changed = true;
                     new_vector = vs_out.new_vector;
+                }
+                if vs_out.playing_toggled {
+                    self.state.vector_view_playing = !self.state.vector_view_playing;
+                    if self.state.vector_view_playing {
+                        self.state.playback_time_accumulator = 0.0;
+                        // If at last vector, reset to 0 to replay
+                        if self.state.current_vector_index >= self.state.total_vectors_in_layer.saturating_sub(1) {
+                            self.state.current_vector_index = 0;
+                        }
+                    }
                 }
             }
 
@@ -552,6 +582,13 @@ impl UiRenderer {
                     egui::FontId::proportional(13.0),
                     egui::Color32::from_rgb(190, 190, 190),
                 );
+                painter.text(
+                    center + egui::vec2(0.0, 46.0),
+                    egui::Align2::CENTER_CENTER,
+                    crate::APP_DEVELOPER,
+                    egui::FontId::proportional(11.0),
+                    egui::Color32::from_rgb(120, 120, 120),
+                );
             }
 
 
@@ -604,6 +641,11 @@ impl UiRenderer {
         // Update state if vector changed via slider
         if vector_changed {
             self.state.current_vector_index = new_vector;
+            // Pause playback on manual slider interaction
+            if self.state.vector_view_playing {
+                self.state.vector_view_playing = false;
+                self.state.playback_time_accumulator = 0.0;
+            }
         }
 
         // Handle platform output
@@ -629,7 +671,7 @@ impl UiRenderer {
             show_contours: self.state.show_contours,
             show_hatches: self.state.show_hatches,
             show_arrows: self.state.show_arrows,
-            show_wait_markers: self.state.show_wait_markers,
+            show_wait_markers: self.state.param_mode == Some(crate::application::ports::ParameterMode::WaitTime),
             param_mode: self.state.param_mode,
             param_filter_min: self.state.param_filter_min,
             param_filter_max: self.state.param_filter_max,
@@ -645,6 +687,7 @@ impl UiRenderer {
             fit_view_requested,
             vector_view_enabled: self.state.vector_view_enabled,
             vector_index: self.state.current_vector_index,
+            vector_view_playing: self.state.vector_view_playing,
         }
     }
 

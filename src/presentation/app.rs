@@ -6,10 +6,11 @@ use anyhow::Result;
 use log::{info, warn, error};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 use winit::event::WindowEvent;
 use winit::event_loop::EventLoop;
 
-use crate::application::ports::{ConfigManager, FileLoader, ParameterMode, Renderer};
+use crate::application::ports::{ConfigManager, DisplayOptions, FileLoader, ParameterMode, Renderer};
 use crate::application::use_cases::{
     LoadToolpathUseCase, NavigateLayersUseCase, RenderViewUseCase, DisplayOption,
 };
@@ -52,6 +53,8 @@ pub struct AppState {
     pub needs_redraw: bool,
     /// Shared loading state for background file loading
     pub loading_state: Arc<Mutex<LoadingState>>,
+    /// Last frame timestamp for delta-time computation
+    pub last_frame_time: Option<Instant>,
 }
 
 impl Default for AppState {
@@ -62,6 +65,7 @@ impl Default for AppState {
             render: RenderViewUseCase::new(),
             needs_redraw: true,
             loading_state: Arc::new(Mutex::new(LoadingState::Idle)),
+            last_frame_time: None,
         }
     }
 }
@@ -111,7 +115,9 @@ impl App {
         let mut renderer = GlRenderer::new();
         let (width, height) = app_window.size();
         renderer.initialize(width, height)?;
-        // Offset content center downward to account for top toolbar
+        // Set DPI scale factor for correct logical-pixel projection
+        renderer.set_scale_factor(app_window.scale_factor);
+        // Offset content center downward to account for top toolbar (in logical pixels)
         renderer.set_view_offset_y(UI_TOOLBAR_HEIGHT / 2.0);
 
         // Create UI renderer
@@ -126,7 +132,8 @@ impl App {
         if args.len() > 1 {
             let file_path = &args[1];
             // Startup load is synchronous (no window to show yet)
-            match load_file_sync(&load_use_case, file_path, &mut state, width, height) {
+            let (logical_w, logical_h) = app_window.logical_size();
+            match load_file_sync(&load_use_case, file_path, &mut state, logical_w, logical_h) {
                 Err(e) => error!("Failed to load file: {}", e),
                 Ok(ranges) => {
                     ui.state.param_ranges = ranges.clone();
@@ -209,8 +216,8 @@ fn load_file_sync(
     use_case: &LoadToolpathUseCase,
     path: &str,
     state: &mut AppState,
-    viewport_width: u32,
-    viewport_height: u32,
+    viewport_width: f32,
+    viewport_height: f32,
 ) -> Result<ParamRanges> {
     info!("Loading file (sync): {}", path);
 
@@ -273,8 +280,8 @@ fn start_background_load(
 fn finalize_load(
     toolpath: Toolpath,
     state: &mut AppState,
-    viewport_width: u32,
-    viewport_height: u32,
+    viewport_width: f32,
+    viewport_height: f32,
 ) -> Result<ParamRanges> {
     let stats = toolpath.slice_stack.stats();
 
@@ -292,10 +299,10 @@ fn finalize_load(
 
     state.navigation.initialize(&toolpath.slice_stack);
 
-    let render_height = (viewport_height as f32 - UI_TOOLBAR_HEIGHT).max(100.0);
+    let render_height = (viewport_height - UI_TOOLBAR_HEIGHT).max(100.0);
     state.render.fit_to_stack(
         &toolpath.slice_stack,
-        viewport_width as f32,
+        viewport_width,
         render_height,
     );
 
@@ -323,10 +330,11 @@ fn poll_loading_state(
             ui.state.loading_file = Some(name);
             true // keep redrawing for spinner
         }
-        LoadingState::Complete(toolpath, ranges) => {
-            // Loading done — finalize
-            ui.state.loading_file = None;
-            let (w, h) = window.size();
+        LoadingState::Complete(toolpath, _ranges) => {
+            // Loading done — reset all UI and render state to defaults
+            ui.state.reset_for_new_file();
+            state.render.display_options = DisplayOptions::default();
+            let (w, h) = window.logical_size();
             match finalize_load(toolpath, state, w, h) {
                 Ok(ranges) => {
                     ui.state.param_ranges = ranges.clone();
@@ -395,7 +403,11 @@ fn handle_event(
             if let Err(e) = renderer.resize(width, height) {
                 error!("Resize error: {}", e);
             }
+            // Update scale factor (may change on DPI/monitor change)
+            window.scale_factor = window.window.scale_factor() as f32;
+            renderer.set_scale_factor(window.scale_factor);
             state.needs_redraw = true;
+            window.request_redraw();
         }
 
         AppEvent::Redraw => {
@@ -416,12 +428,12 @@ fn handle_event(
                 // Ruler live preview (move cursor while placing second point)
                 else if ui.state.tool_state.ruler_start.is_some() {
                     let mouse = &window.input_state.mouse_pos;
-                    let (width, height) = window.size();
-                    let viewport_h = height as f32 - UI_TOOLBAR_HEIGHT;
+                    let (logical_w, logical_h) = window.logical_size();
+                    let viewport_h = logical_h - UI_TOOLBAR_HEIGHT;
                     let viewport_mouse_x = mouse.x;
                     let viewport_mouse_y = mouse.y - UI_TOOLBAR_HEIGHT;
                     let world = state.render.view_state.screen_to_world(
-                        viewport_mouse_x, viewport_mouse_y, width as f32, viewport_h,
+                        viewport_mouse_x, viewport_mouse_y, logical_w, viewport_h,
                     );
                     ui.state.tool_state.ruler_end = Some(world);
                     window.request_redraw();
@@ -467,9 +479,9 @@ fn handle_event(
                             let dx = (end.x - start.x).abs();
                             let dy = (end.y - start.y).abs();
                             if dx > 5.0 && dy > 5.0 {
-                                let (width, height) = window.size();
-                                let viewport_h = height as f32 - UI_TOOLBAR_HEIGHT;
-                                let viewport_w = width as f32;
+                                let (logical_w, logical_h) = window.logical_size();
+                                let viewport_h = logical_h - UI_TOOLBAR_HEIGHT;
+                                let viewport_w = logical_w;
 
                                 let w1 = state.render.view_state.screen_to_world(
                                     start.x, start.y - UI_TOOLBAR_HEIGHT, viewport_w, viewport_h,
@@ -490,12 +502,12 @@ fn handle_event(
                     }
                     // Right button click: add/remove measurement point
                     MouseButton::Right if pressed => {
-                        let (width, height) = window.size();
-                        let viewport_h = height as f32 - UI_TOOLBAR_HEIGHT;
+                        let (logical_w, logical_h) = window.logical_size();
+                        let viewport_h = logical_h - UI_TOOLBAR_HEIGHT;
                         let viewport_mouse_x = mouse.x;
                         let viewport_mouse_y = mouse.y - UI_TOOLBAR_HEIGHT;
                         let world = state.render.view_state.screen_to_world(
-                            viewport_mouse_x, viewport_mouse_y, width as f32, viewport_h,
+                            viewport_mouse_x, viewport_mouse_y, logical_w, viewport_h,
                         );
 
                         // Check if clicking near an existing measurement dot → remove it
@@ -553,19 +565,19 @@ fn handle_event(
         AppEvent::Scroll { delta } => {
             // Handle zoom only when pointer is in viewport
             if pointer_in_viewport {
-                let (width, height) = window.size();
+                let (logical_w, logical_h) = window.logical_size();
                 let zoom_factor = if delta > 0.0 { 1.1 } else { 0.9 };
                 let mouse = &window.input_state.mouse_pos;
                 
-                // Subtract toolbar height so zoom anchors correctly in viewport
+                // Mouse coords are already logical; subtract logical toolbar height
                 let viewport_mouse_y = mouse.y - UI_TOOLBAR_HEIGHT;
-                let viewport_height = height as f32 - UI_TOOLBAR_HEIGHT;
+                let viewport_height = logical_h - UI_TOOLBAR_HEIGHT;
                 
                 state.render.zoom(
                     zoom_factor,
                     mouse.x,
                     viewport_height - viewport_mouse_y, // Flip Y
-                    width as f32,
+                    logical_w,
                     viewport_height,
                 );
                 state.needs_redraw = true;
@@ -649,11 +661,11 @@ fn handle_key_action(
 
         InputAction::ResetView => {
             if let Some(ref toolpath) = state.toolpath {
-                let (width, height) = window.size();
-                let render_height = (height as f32 - UI_TOOLBAR_HEIGHT).max(100.0);
+                let (logical_w, logical_h) = window.logical_size();
+                let render_height = (logical_h - UI_TOOLBAR_HEIGHT).max(100.0);
                 state.render.fit_to_stack(
                     &toolpath.slice_stack,
-                    width as f32,
+                    logical_w,
                     render_height,
                 );
                 state.needs_redraw = true;
@@ -703,29 +715,26 @@ fn handle_key_action(
         }
 
         InputAction::ToggleWaitMarkers => {
-            ui.state.show_wait_markers = !ui.state.show_wait_markers;
-            state.needs_redraw = true;
-            window.request_redraw();
+            // Wait markers toggle removed — shown automatically when WaitTime param mode is active
         }
 
         InputAction::ToggleScaleBar => {
-            ui.state.tool_state.show_scale_bar = !ui.state.tool_state.show_scale_bar;
-            window.request_redraw();
+            // Scale bar is always visible — toggle disabled
         }
 
         InputAction::ZoomIn => {
-            let (width, height) = window.size();
-            let viewport_height = (height as f32 - UI_TOOLBAR_HEIGHT).max(100.0);
-            let viewport_width = width as f32;
+            let (logical_w, logical_h) = window.logical_size();
+            let viewport_height = (logical_h - UI_TOOLBAR_HEIGHT).max(100.0);
+            let viewport_width = logical_w;
             state.render.zoom(1.2, viewport_width / 2.0, viewport_height / 2.0, viewport_width, viewport_height);
             state.needs_redraw = true;
             window.request_redraw();
         }
 
         InputAction::ZoomOut => {
-            let (width, height) = window.size();
-            let viewport_height = (height as f32 - UI_TOOLBAR_HEIGHT).max(100.0);
-            let viewport_width = width as f32;
+            let (logical_w, logical_h) = window.logical_size();
+            let viewport_height = (logical_h - UI_TOOLBAR_HEIGHT).max(100.0);
+            let viewport_width = logical_w;
             state.render.zoom(0.8, viewport_width / 2.0, viewport_height / 2.0, viewport_width, viewport_height);
             state.needs_redraw = true;
             window.request_redraw();
@@ -796,6 +805,9 @@ fn handle_key_action(
                 // Reset to show all vectors
                 ui.state.current_vector_index = ui.state.total_vectors_in_layer.saturating_sub(1);
             }
+            // Stop playback when toggling vector view
+            ui.state.vector_view_playing = false;
+            ui.state.playback_time_accumulator = 0.0;
             state.needs_redraw = true;
             window.request_redraw();
         }
@@ -803,6 +815,9 @@ fn handle_key_action(
         InputAction::NextVector => {
             if ui.state.vector_view_enabled && ui.state.current_vector_index + 1 < ui.state.total_vectors_in_layer {
                 ui.state.current_vector_index += 1;
+                // Stop playback on manual navigation
+                ui.state.vector_view_playing = false;
+                ui.state.playback_time_accumulator = 0.0;
                 state.needs_redraw = true;
                 window.request_redraw();
             }
@@ -811,6 +826,24 @@ fn handle_key_action(
         InputAction::PrevVector => {
             if ui.state.vector_view_enabled && ui.state.current_vector_index > 0 {
                 ui.state.current_vector_index -= 1;
+                // Stop playback on manual navigation
+                ui.state.vector_view_playing = false;
+                ui.state.playback_time_accumulator = 0.0;
+                state.needs_redraw = true;
+                window.request_redraw();
+            }
+        }
+
+        InputAction::ToggleVectorPlayback => {
+            if ui.state.vector_view_enabled {
+                ui.state.vector_view_playing = !ui.state.vector_view_playing;
+                if ui.state.vector_view_playing {
+                    ui.state.playback_time_accumulator = 0.0;
+                    // If at last vector, reset to 0 to replay
+                    if ui.state.current_vector_index >= ui.state.total_vectors_in_layer.saturating_sub(1) {
+                        ui.state.current_vector_index = 0;
+                    }
+                }
                 state.needs_redraw = true;
                 window.request_redraw();
             }
@@ -862,9 +895,9 @@ fn render_frame(
     let loading_active = poll_loading_state(state, ui, window);
 
     // Update view transform for UI overlays (ruler, grid labels, scale bar)
-    let (vp_w, vp_h) = window.size();
-    let viewport_height = vp_h as f32 - UI_TOOLBAR_HEIGHT;
-    let viewport_width = vp_w as f32;
+    // All viewport calculations use logical pixels for consistency
+    let (viewport_width, logical_h) = window.logical_size();
+    let viewport_height = logical_h - UI_TOOLBAR_HEIGHT;
     ui.update_view_transform(&state.render.view_state, viewport_width, viewport_height);
 
     // 1. Run egui logic to get current toggle/slider values (no painting yet)
@@ -898,11 +931,66 @@ fn render_frame(
     if layer_changed {
         state.navigation.go_to_layer(ui_output.layer_index);
         state.needs_redraw = true;
+        // Stop playback on layer change
+        ui.state.vector_view_playing = false;
+        ui.state.playback_time_accumulator = 0.0;
+    }
+
+    // ── Vector playback advancement ──
+    // Compute delta time
+    let now = Instant::now();
+    let delta_seconds = state.last_frame_time
+        .map(|prev| now.duration_since(prev).as_secs_f64())
+        .unwrap_or(0.0)
+        .min(0.1); // cap at 100ms to avoid jumps after pauses
+    state.last_frame_time = Some(now);
+
+    let playback_active = ui.state.vector_view_playing && ui.state.vector_view_enabled;
+    if playback_active {
+        if let Some(ref toolpath) = state.toolpath {
+            if let Some(layer) = state.navigation.get_current_layer(&toolpath.slice_stack) {
+                ui.state.playback_time_accumulator += delta_seconds * ui.state.playback_speed as f64;
+
+                // Advance through vectors based on their real scan time
+                loop {
+                    let idx = ui.state.current_vector_index;
+                    if idx >= layer.vectors.len().saturating_sub(1) {
+                        // Reached last vector — stop playback
+                        ui.state.vector_view_playing = false;
+                        ui.state.playback_time_accumulator = 0.0;
+                        break;
+                    }
+
+                    let vec = &layer.vectors[idx];
+                    let length_mm = vec.length();
+                    let speed_mm_s = vec.parameters.speed.unwrap_or(1000.0) as f64;
+                    let scan_time_s = if speed_mm_s > 0.0 {
+                        length_mm as f64 / speed_mm_s
+                    } else {
+                        0.001 // fallback: 1ms
+                    };
+                    // Add wait time (stored in microseconds)
+                    let wait_s = vec.parameters.wait_time.unwrap_or(0.0) as f64 / 1_000_000.0;
+                    let total_duration = scan_time_s + wait_s;
+
+                    if ui.state.playback_time_accumulator >= total_duration {
+                        ui.state.playback_time_accumulator -= total_duration;
+                        ui.state.current_vector_index += 1;
+                        state.needs_redraw = true;
+                    } else {
+                        break;
+                    }
+                }
+            }
+        }
     }
 
     // Sync visibility toggles from UI to display options BEFORE rendering
-    let vector_view_changed = state.render.display_options.max_vector_index != if ui_output.vector_view_enabled {
-        Some(ui_output.vector_index)
+    // Use live vector index from ui.state (may have been advanced by playback)
+    let live_vector_index = ui.state.current_vector_index;
+    let live_vector_view_enabled = ui.state.vector_view_enabled;
+    let vector_view_changed = state.render.display_options.max_vector_index != if live_vector_view_enabled {
+        Some(live_vector_index)
     } else {
         None
     };
@@ -928,8 +1016,8 @@ fn render_frame(
     state.render.display_options.param_filter_max = ui_output.param_filter_max;
     state.render.display_options.show_grid = ui_output.tool_state.show_grid;
     state.render.display_options.grid_unit = ui_output.global_units.length;
-    state.render.display_options.max_vector_index = if ui_output.vector_view_enabled {
-        Some(ui_output.vector_index)
+    state.render.display_options.max_vector_index = if live_vector_view_enabled {
+        Some(live_vector_index)
     } else {
         None
     };
@@ -1030,7 +1118,8 @@ fn render_frame(
     );
 
     // Only request another redraw if state actually changed
-    if layer_changed || toggles_changed || ui_output.needs_repaint || loading_active {
+    let playback_running = ui.state.vector_view_playing && ui.state.vector_view_enabled;
+    if layer_changed || toggles_changed || ui_output.needs_repaint || loading_active || playback_running {
         window.request_redraw();
     }
 
@@ -1058,9 +1147,9 @@ fn update_hover_info(
     };
 
     let mouse = &window.input_state.mouse_pos;
-    let (width, height) = window.size();
-    let viewport_h = height as f32 - UI_TOOLBAR_HEIGHT;
-    let viewport_w = width as f32;
+    let (logical_w, logical_h) = window.logical_size();
+    let viewport_h = logical_h - UI_TOOLBAR_HEIGHT;
+    let viewport_w = logical_w;
     let world = state.render.view_state.screen_to_world(
         mouse.x, mouse.y - UI_TOOLBAR_HEIGHT, viewport_w, viewport_h,
     );
@@ -1095,20 +1184,9 @@ fn update_hover_info(
     }
 }
 
-/// Update the window title with layer info
-fn update_window_title(window: &AppWindow, state: &AppState) {
-    let nav_state = state.navigation.state();
-    if nav_state.total_layers > 0 {
-        let title = format!(
-            "Toolpath Viewer - Layer {}/{} (z = {:.3} mm)",
-            nav_state.current_index + 1,
-            nav_state.total_layers,
-            nav_state.current_z
-        );
-        window.set_title(&title);
-    } else {
-        window.set_title("Toolpath Viewer - No file loaded");
-    }
+/// Update the window title
+fn update_window_title(window: &AppWindow, _state: &AppState) {
+    window.set_title(&format!("Toolpath Viewer [{}]", crate::APP_VERSION));
 }
 
 /// Trigger a snapshot (screenshot or SVG export)

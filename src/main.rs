@@ -7,6 +7,11 @@
 //! - Infrastructure: External dependencies (file I/O, OpenGL rendering)
 //! - Presentation: User interface and event handling
 
+/// Application version string
+pub const APP_VERSION: &str = "v1.0.1 (beta)";
+/// Developer attribution
+pub const APP_DEVELOPER: &str = "Developed by Tailored Alloys";
+
 mod domain;
 mod application;
 mod infrastructure;
