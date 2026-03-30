@@ -8,7 +8,7 @@ use egui::{Align2, Color32, Context, RichText, Rounding, Vec2};
 use lucide_icons::Icon as LucideIcon;
 
 use crate::presentation::layout::ToolPanelRegion;
-use crate::presentation::theme::*;
+use crate::presentation::theme;
 
 use super::super::ui::ToolMode;
 
@@ -32,6 +32,7 @@ pub fn show_tool_panel(
     show_grid: &mut bool,
 ) -> ToolPanelOutput {
     let mut output = ToolPanelOutput::default();
+    let t = theme::active();
 
     egui::Area::new(egui::Id::new("tool_panel_area"))
         .fixed_pos(region.anchor_pos)
@@ -41,13 +42,13 @@ pub fn show_tool_panel(
         .movable(false)
         .show(ctx, |ui| {
             egui::Frame::none()
-                .fill(PANEL_BG_TRANSLUCENT)
+                .fill(t.panel_bg_translucent)
                 .rounding(Rounding::same(8.0))
                 .shadow(egui::epaint::Shadow {
                     offset: egui::vec2(0.0, 1.0),
                     blur: 6.0,
                     spread: 0.0,
-                    color: PANEL_SHADOW,
+                    color: t.panel_shadow,
                 })
                 .inner_margin(egui::Margin::symmetric(4.0, 4.0))
                 .show(ui, |ui| {
@@ -62,11 +63,11 @@ pub fn show_tool_panel(
                                             active: bool|
                          -> bool {
                             let fill = if active {
-                                TOGGLE_ACTIVE_BG
+                                t.toggle_active_bg
                             } else {
                                 Color32::TRANSPARENT
                             };
-                            let tc = if active { ACCENT } else { TEXT_PRIMARY };
+                            let tc = if active { t.accent } else { t.text_primary };
                             let btn = egui::Button::new(
                                 RichText::new(icon).size(icon_sz).color(tc),
                             )
@@ -116,7 +117,7 @@ pub fn show_tool_panel(
                                     &LucideIcon::X.unicode().to_string(),
                                 )
                                 .size(11.0)
-                                .color(TEXT_SECONDARY),
+                                .color(t.text_secondary),
                             )
                             .fill(Color32::TRANSPARENT)
                             .rounding(Rounding::same(4.0))

@@ -6,9 +6,9 @@
 use egui::{Color32, Context, DragValue, RichText, Rounding, Stroke, Vec2};
 
 use crate::application::ports::{GlobalUnits, ParameterMode};
-use crate::domain::value_objects::Color;
 use crate::presentation::layout::GradientRegion;
-use crate::presentation::theme::*;
+use crate::presentation::palette::{self, ThemePalette};
+use crate::presentation::theme;
 
 use super::super::ui::ParamRanges;
 
@@ -28,6 +28,7 @@ pub fn show_gradient_scale(
     param_filter_max: &mut f32,
     param_ranges: &ParamRanges,
     global_units: &GlobalUnits,
+    active_palette: &ThemePalette,
 ) -> GradientOutput {
     let content_h = region.content_height;
 
@@ -39,6 +40,8 @@ pub fn show_gradient_scale(
     let controls_h = label_h + val_label_h + val_label_h + filter_section_h + spacing * 4.0;
     let bar_h = (content_h - controls_h).max(50.0);
 
+    let t = theme::active();
+
     egui::Area::new(egui::Id::new("gradient_scale_area"))
         .fixed_pos(region.pos)
         .order(egui::Order::Foreground)
@@ -46,13 +49,13 @@ pub fn show_gradient_scale(
         .movable(false)
         .show(ctx, |ui| {
             egui::Frame::none()
-                .fill(PANEL_BG_TRANSLUCENT)
+                .fill(t.panel_bg_translucent)
                 .rounding(Rounding::same(10.0))
                 .shadow(egui::epaint::Shadow {
                     offset: egui::vec2(0.0, 2.0),
                     blur: 8.0,
                     spread: 0.0,
-                    color: PANEL_SHADOW,
+                    color: t.panel_shadow,
                 })
                 .inner_margin(egui::Margin::symmetric(12.0, 8.0))
                 .show(ui, |ui| {
@@ -74,7 +77,7 @@ pub fn show_gradient_scale(
                         egui::Align2::CENTER_CENTER,
                         &mode_label,
                         egui::FontId::proportional(11.0),
-                        TEXT_PRIMARY,
+                        t.text_primary,
                     );
                     y += label_h + spacing;
 
@@ -85,7 +88,7 @@ pub fn show_gradient_scale(
                         egui::Align2::CENTER_CENTER,
                         format!("{:.1}", display_max),
                         egui::FontId::proportional(10.0),
-                        TEXT_SECONDARY,
+                        t.text_secondary,
                     );
                     y += val_label_h + spacing;
 
@@ -97,8 +100,8 @@ pub fn show_gradient_scale(
                     let n = 64;
                     let seg_h = bar_rect.height() / n as f32;
                     for i in 0..n {
-                        let t = 1.0 - (i as f32 / (n - 1) as f32);
-                        let c = Color::viridis_gradient(t);
+                        let frac = 1.0 - (i as f32 / (n - 1) as f32);
+                        let c = palette::gradient_color(active_palette, frac);
                         let y0 = bar_rect.top() + i as f32 * seg_h;
                         let seg = egui::Rect::from_min_max(
                             egui::pos2(bar_rect.left(), y0),
@@ -114,10 +117,11 @@ pub fn show_gradient_scale(
                             ),
                         );
                     }
+                    let border_color = if t.is_dark { Color32::from_rgb(80, 80, 80) } else { Color32::from_rgb(180, 180, 180) };
                     ui.painter().rect_stroke(
                         bar_rect,
                         Rounding::same(2.0),
-                        Stroke::new(1.0, Color32::from_rgb(180, 180, 180)),
+                        Stroke::new(1.0, border_color),
                     );
 
                     // Tick marks
@@ -132,7 +136,7 @@ pub fn show_gradient_scale(
                                 egui::pos2(bar_rect.right(), tick_y),
                                 egui::pos2(bar_rect.right() + 4.0, tick_y),
                             ],
-                            Stroke::new(1.0, Color32::from_rgb(100, 100, 100)),
+                            Stroke::new(1.0, t.text_secondary),
                         );
                         if region.show_ticks && tick_i > 0 && tick_i < num_ticks - 1 {
                             let raw_val = val_min + frac * (val_max - val_min);
@@ -142,7 +146,7 @@ pub fn show_gradient_scale(
                                 egui::Align2::LEFT_CENTER,
                                 format!("{:.0}", display_val),
                                 egui::FontId::proportional(8.0),
-                                Color32::from_rgb(100, 100, 100),
+                                t.text_secondary,
                             );
                         }
                     }
@@ -155,7 +159,7 @@ pub fn show_gradient_scale(
                         egui::Align2::CENTER_CENTER,
                         format!("{:.1}", display_min),
                         egui::FontId::proportional(10.0),
-                        TEXT_SECONDARY,
+                        t.text_secondary,
                     );
                     y += val_label_h + spacing;
 
@@ -166,7 +170,7 @@ pub fn show_gradient_scale(
                             egui::pos2(content_rect.left() + 8.0, y),
                             egui::pos2(content_rect.right() - 8.0, y),
                         ],
-                        Stroke::new(1.0, Color32::from_rgba_premultiplied(180, 180, 180, 80)),
+                        Stroke::new(1.0, if t.is_dark { Color32::from_rgba_premultiplied(100, 100, 100, 80) } else { Color32::from_rgba_premultiplied(180, 180, 180, 80) }),
                     );
                     y += 6.0;
 
@@ -190,7 +194,7 @@ pub fn show_gradient_scale(
                         egui::Align2::CENTER_CENTER,
                         "Min",
                         egui::FontId::proportional(9.0),
-                        TEXT_SECONDARY,
+                        t.text_secondary,
                     );
                     let min_input_rect = egui::Rect::from_min_size(
                         egui::pos2(margin_x + label_w + 2.0, y + 1.0),
@@ -211,7 +215,7 @@ pub fn show_gradient_scale(
                         egui::Align2::CENTER_CENTER,
                         "Max",
                         egui::FontId::proportional(9.0),
-                        TEXT_SECONDARY,
+                        t.text_secondary,
                     );
                     let max_input_rect = egui::Rect::from_min_size(
                         egui::pos2(margin_x + label_w + 2.0, y + 1.0),

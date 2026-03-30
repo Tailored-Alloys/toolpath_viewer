@@ -13,6 +13,7 @@ use winit::event_loop::EventLoop;
 use crate::application::ports::{ConfigManager, DisplayOptions, FileLoader, ParameterMode, Renderer};
 use crate::application::use_cases::{
     LoadToolpathUseCase, NavigateLayersUseCase, RenderViewUseCase, DisplayOption,
+    ColorScheme,
 };
 use crate::domain::entities::{Toolpath, VectorType};
 use crate::domain::services::find_nearest_vector;
@@ -25,6 +26,7 @@ use crate::presentation::{
     create_window, run_event_loop, UiRenderer, TOOLBAR_BOTTOM, ToolMode,
     RulerMeasurement, SnapshotFormat,
 };
+use crate::presentation::palette::{self, ResolvedMode, ThemePalette, resolve_mode, resolve_palette};
 
 /// Actual rendered height of the top toolbar in pixels (includes frame padding)
 const UI_TOOLBAR_HEIGHT: f32 = TOOLBAR_BOTTOM;
@@ -81,6 +83,7 @@ pub struct AppContext {
 /// Main application
 pub struct App {
     config: WindowConfig,
+    theme_config: crate::application::ports::ThemeConfig,
 }
 
 impl App {
@@ -97,7 +100,7 @@ impl App {
             ..Default::default()
         };
 
-        Ok(Self { config })
+        Ok(Self { config, theme_config: app_config.theme })
     }
 
     /// Run the application
@@ -122,6 +125,39 @@ impl App {
 
         // Create UI renderer
         let mut ui = UiRenderer::new(app_window.glow_context.clone(), &app_window.window);
+
+        // Apply saved theme
+        {
+            let tc = &self.theme_config;
+            let sys_dark = app_window.window.theme()
+                .map(|t| t == winit::window::Theme::Dark)
+                .unwrap_or(false);
+            let resolved = resolve_mode(tc.mode, sys_dark);
+            let palette_id = match resolved {
+                ResolvedMode::Light => tc.light_palette,
+                ResolvedMode::Dark => tc.dark_palette,
+            };
+            let custom = match resolved {
+                ResolvedMode::Light => tc.custom_light.as_ref(),
+                ResolvedMode::Dark => tc.custom_dark.as_ref(),
+            };
+            let palette = resolve_palette(resolved, palette_id, custom);
+            crate::presentation::theme::apply_theme(&ui.ctx, &palette);
+
+            // Sync into UI state
+            ui.state.theme_mode = tc.mode;
+            ui.state.active_palette_id = palette_id;
+            ui.state.system_is_dark = sys_dark;
+
+            // Sync into renderer
+            renderer.set_color_scheme(ColorScheme::from_palette(&palette));
+            renderer.set_gradient_stops(palette.gradient_stops.clone());
+            state.render.display_options.background_color = palette.background;
+            state.render.display_options.grid_minor_color = palette.grid_minor;
+            state.render.display_options.grid_major_color = palette.grid_major;
+
+            ui.state.active_palette = palette;
+        }
 
         // Create file loader
         let loaders: Vec<Arc<dyn FileLoader>> = vec![Arc::new(IltLoader::new())];
@@ -597,6 +633,27 @@ fn handle_event(
             start_background_load(load_use_case, path_buf, &state.loading_state);
             window.request_redraw();
         }
+
+        AppEvent::SystemThemeChanged { is_dark } => {
+            ui.state.system_is_dark = is_dark;
+            if ui.state.theme_mode == crate::application::ports::ThemeMode::System {
+                let resolved = resolve_mode(ui.state.theme_mode, is_dark);
+                let palette_id = match resolved {
+                    ResolvedMode::Light => ui.state.active_palette_id,
+                    ResolvedMode::Dark => ui.state.active_palette_id,
+                };
+                let palette = resolve_palette(resolved, palette_id, None);
+                crate::presentation::theme::apply_theme(&ui.ctx, &palette);
+                renderer.set_color_scheme(ColorScheme::from_palette(&palette));
+                renderer.set_gradient_stops(palette.gradient_stops.clone());
+                state.render.display_options.background_color = palette.background;
+                state.render.display_options.grid_minor_color = palette.grid_minor;
+                state.render.display_options.grid_major_color = palette.grid_major;
+                ui.state.active_palette = palette;
+                state.needs_redraw = true;
+            }
+            window.request_redraw();
+        }
     }
 
     false
@@ -1006,6 +1063,28 @@ fn render_frame(
         || state.render.display_options.show_grid != ui_output.tool_state.show_grid
         || vector_view_changed;
 
+    // Handle theme/palette changes from preferences dialog
+    if ui_output.theme_changed {
+        let pal = &ui_output.active_palette;
+        renderer.set_color_scheme(ColorScheme::from_palette(pal));
+        renderer.set_gradient_stops(pal.gradient_stops.clone());
+        state.render.display_options.background_color = pal.background;
+        state.render.display_options.grid_minor_color = pal.grid_minor;
+        state.render.display_options.grid_major_color = pal.grid_major;
+
+        // Persist theme preferences
+        let cm = JsonConfigManager::new();
+        if let Ok(mut cfg) = cm.load() {
+            let resolved = resolve_mode(ui.state.theme_mode, ui.state.system_is_dark);
+            cfg.theme.mode = ui.state.theme_mode;
+            match resolved {
+                ResolvedMode::Light => cfg.theme.light_palette = ui.state.active_palette_id,
+                ResolvedMode::Dark => cfg.theme.dark_palette = ui.state.active_palette_id,
+            }
+            let _ = cm.save(&cfg);
+        }
+    }
+
     state.render.display_options.show_slices = ui_output.show_slices;
     state.render.display_options.show_contours = ui_output.show_contours;
     state.render.display_options.show_hatches = ui_output.show_hatches;
@@ -1030,7 +1109,11 @@ fn render_frame(
 
     // Render background grid BEFORE layer content
     if state.render.display_options.show_grid {
-        renderer.render_grid(&state.render.view_state)?;
+        renderer.render_grid(
+            &state.render.view_state,
+            &state.render.display_options.grid_minor_color,
+            &state.render.display_options.grid_major_color,
+        )?;
     }
 
     // Render current layer if we have a toolpath

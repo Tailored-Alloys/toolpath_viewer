@@ -10,7 +10,7 @@ use egui::{Color32, Context, Rounding, Stroke};
 
 use crate::application::ports::{GlobalUnits, GridUnit, ParameterMode, ViewState};
 use crate::presentation::layout::{TOOLBAR_BOTTOM, TOOLBAR_HEIGHT};
-use crate::presentation::theme::ACCENT;
+use crate::presentation::theme;
 
 use super::super::ui::{HoverInfo, RulerMeasurement};
 
@@ -30,6 +30,7 @@ pub fn show_scale_bar(ctx: &Context, zoom: f32, grid_unit: GridUnit, left_offset
         return;
     }
 
+    let t = theme::active();
     let nice_values: &[f32] = &[
         0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1.0, 2.0, 5.0, 10.0, 20.0, 50.0, 100.0, 200.0, 500.0,
     ];
@@ -44,7 +45,7 @@ pub fn show_scale_bar(ctx: &Context, zoom: f32, grid_unit: GridUnit, left_offset
     let bar_px = bar_world * zoom;
     let bar_x_end = bar_x_start + bar_px;
     let tick_h = 6.0;
-    let bar_color = Color32::from_rgb(60, 60, 60);
+    let bar_color = t.text_secondary;
 
     // Bar line
     painter.line_segment(
@@ -97,7 +98,12 @@ pub fn show_ruler_overlay(
         egui::Id::new("ruler_overlay"),
     ));
     let ruler_color = Color32::from_rgb(220, 50, 50);
-    let label_bg = Color32::from_rgba_premultiplied(255, 255, 255, 200);
+    let t = theme::active();
+    let label_bg = if t.is_dark {
+        Color32::from_rgba_premultiplied(40, 40, 40, 200)
+    } else {
+        Color32::from_rgba_premultiplied(255, 255, 255, 200)
+    };
 
     let dot_color = Color32::from_rgb(140, 140, 140);
     let dot_radius = 5.0;
@@ -193,7 +199,7 @@ pub fn show_zoom_rect(
         0.0,
         Color32::from_rgba_premultiplied(25, 118, 210, 30),
     );
-    painter.rect_stroke(rect, 0.0, Stroke::new(1.5, ACCENT));
+    painter.rect_stroke(rect, 0.0, Stroke::new(1.5, theme::active().accent));
 }
 
 /// Render grid coordinate labels overlay along viewport edges.
@@ -209,8 +215,13 @@ pub fn show_grid_labels(
     ));
     let (_, major_spacing) = crate::infrastructure::rendering::GridRenderer::spacing(view.zoom);
     let (vis_min, vis_max) = view.visible_bounds(*vw, *vh);
-    let label_color = Color32::from_rgb(100, 100, 100);
-    let label_bg = Color32::from_rgba_premultiplied(250, 250, 250, 200);
+    let t = theme::active();
+    let label_color = t.text_secondary;
+    let label_bg = if t.is_dark {
+        Color32::from_rgba_premultiplied(40, 40, 40, 200)
+    } else {
+        Color32::from_rgba_premultiplied(250, 250, 250, 200)
+    };
 
     // Bottom edge labels (X axis)
     let x_start = (vis_min.x / major_spacing).floor() * major_spacing;
@@ -291,10 +302,11 @@ pub fn show_hover_tooltip(
     ));
 
     let font = egui::FontId::proportional(11.5);
-    let label_color = Color32::from_rgb(80, 80, 80);
-    let value_color = Color32::from_rgb(30, 30, 30);
-    let bg_color = Color32::from_rgba_premultiplied(255, 255, 255, 230);
-    let border_color = Color32::from_rgb(180, 180, 180);
+    let t = theme::active();
+    let label_color = t.text_secondary;
+    let value_color = t.text_primary;
+    let bg_color = t.panel_bg_translucent;
+    let border_color = if t.is_dark { Color32::from_rgb(80, 80, 80) } else { Color32::from_rgb(180, 180, 180) };
 
     let fmt = |val: Option<f32>, mode: ParameterMode| -> String {
         match val {

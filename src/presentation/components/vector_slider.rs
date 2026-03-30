@@ -9,7 +9,7 @@ use egui::{Color32, Context, DragValue, RichText, Rounding, Stroke};
 use lucide_icons::Icon as LucideIcon;
 
 use crate::presentation::layout::VectorSliderRegion;
-use crate::presentation::theme::*;
+use crate::presentation::theme::{self, floating_panel_frame};
 
 /// Output from the vector slider component
 #[derive(Debug, Clone, Default)]
@@ -34,6 +34,7 @@ pub fn show_vector_slider(
         return output;
     }
 
+    let t = theme::active();
     let max_vector = total_vectors.saturating_sub(1);
     let content_h = region.content_height;
 
@@ -76,7 +77,7 @@ pub fn show_vector_slider(
                         egui::vec2(44.0, btn_h),
                     );
                     let last_btn_top = egui::Button::new(
-                        RichText::new(&last_icon).size(16.0).color(TEXT_PRIMARY),
+                        RichText::new(&last_icon).size(16.0).color(t.text_primary),
                     )
                     .rounding(Rounding::same(6.0))
                     .fill(Color32::TRANSPARENT);
@@ -133,7 +134,7 @@ pub fn show_vector_slider(
                     painter.rect_filled(
                         track_rect,
                         Rounding::same(track_w / 2.0),
-                        Color32::from_rgb(220, 220, 220),
+                        if t.is_dark { Color32::from_rgb(60, 60, 60) } else { Color32::from_rgb(220, 220, 220) },
                     );
 
                     // Draw filled portion (top to thumb = progress)
@@ -157,11 +158,15 @@ pub fn show_vector_slider(
                         Color32::from_rgb(245, 124, 0) // Deep orange
                     } else if is_hovered {
                         Color32::from_rgb(255, 167, 38) // Orange
+                    } else if t.is_dark {
+                        Color32::from_rgb(180, 180, 180)
                     } else {
                         Color32::WHITE
                     };
                     let thumb_stroke_color = if is_active || is_hovered {
                         Color32::from_rgb(245, 124, 0)
+                    } else if t.is_dark {
+                        Color32::from_rgb(100, 100, 100)
                     } else {
                         Color32::from_rgb(160, 160, 160)
                     };
@@ -188,7 +193,7 @@ pub fn show_vector_slider(
                         egui::Align2::LEFT_CENTER,
                         &vec_label,
                         egui::FontId::proportional(9.0),
-                        TEXT_SECONDARY,
+                        t.text_secondary,
                     );
 
                     // First vector button (bottom — lowest vector number)
@@ -199,7 +204,7 @@ pub fn show_vector_slider(
                         egui::vec2(44.0, btn_h),
                     );
                     let first_btn_bottom = egui::Button::new(
-                        RichText::new(&first_icon).size(16.0).color(TEXT_PRIMARY),
+                        RichText::new(&first_icon).size(16.0).color(t.text_primary),
                     )
                     .rounding(Rounding::same(6.0))
                     .fill(Color32::TRANSPARENT);
@@ -255,10 +260,10 @@ pub fn show_vector_slider(
                         egui::vec2(44.0, speed_h),
                     );
                     let speed_btn = egui::Button::new(
-                        RichText::new(&speed_label).size(11.0).color(TEXT_PRIMARY),
+                        RichText::new(&speed_label).size(11.0).color(t.text_primary),
                     )
                     .rounding(Rounding::same(4.0))
-                    .fill(Color32::from_rgb(240, 240, 240));
+                    .fill(if t.is_dark { Color32::from_rgb(50, 50, 50) } else { Color32::from_rgb(240, 240, 240) });
                     if ui
                         .put(speed_btn_rect, speed_btn)
                         .on_hover_text("Playback speed")
@@ -279,7 +284,7 @@ pub fn show_vector_slider(
                             egui::Align2::CENTER_CENTER,
                             "Go to",
                             egui::FontId::proportional(10.0),
-                            TEXT_SECONDARY,
+                            t.text_secondary,
                         );
 
                         let jump_rect = egui::Rect::from_center_size(

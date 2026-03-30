@@ -10,7 +10,7 @@ use lucide_icons::Icon as LucideIcon;
 
 use crate::application::ports::GlobalUnits;
 use crate::presentation::layout::LayerSliderRegion;
-use crate::presentation::theme::*;
+use crate::presentation::theme::{self, floating_panel_frame};
 
 /// Output from the layer slider component
 #[derive(Debug, Clone, Default)]
@@ -29,6 +29,7 @@ pub fn show_layer_slider(
     global_units: &GlobalUnits,
 ) -> LayerSliderOutput {
     let mut output = LayerSliderOutput::default();
+    let t = theme::active();
     let max_layer = total_layers.saturating_sub(1);
     let content_h = region.content_height;
 
@@ -67,7 +68,7 @@ pub fn show_layer_slider(
                         egui::vec2(44.0, btn_h),
                     );
                     let last_btn_top = egui::Button::new(
-                        RichText::new(&last_icon).size(16.0).color(TEXT_PRIMARY),
+                        RichText::new(&last_icon).size(16.0).color(t.text_primary),
                     )
                     .rounding(Rounding::same(6.0))
                     .fill(Color32::TRANSPARENT);
@@ -124,7 +125,7 @@ pub fn show_layer_slider(
                     painter.rect_filled(
                         track_rect,
                         Rounding::same(track_w / 2.0),
-                        Color32::from_rgb(220, 220, 220),
+                        if t.is_dark { Color32::from_rgb(60, 60, 60) } else { Color32::from_rgb(220, 220, 220) },
                     );
 
                     // Draw filled portion (top to thumb = progress)
@@ -136,7 +137,7 @@ pub fn show_layer_slider(
                         painter.rect_filled(
                             filled_rect,
                             Rounding::same(track_w / 2.0),
-                            ACCENT_LIGHT,
+                            t.accent_light,
                         );
                     }
 
@@ -145,14 +146,18 @@ pub fn show_layer_slider(
                     let is_active = response.dragged();
                     let is_hovered = response.hovered();
                     let thumb_color = if is_active {
-                        ACCENT
+                        t.accent
                     } else if is_hovered {
-                        ACCENT_LIGHT
+                        t.accent_light
+                    } else if t.is_dark {
+                        Color32::from_rgb(180, 180, 180)
                     } else {
                         Color32::WHITE
                     };
                     let thumb_stroke_color = if is_active || is_hovered {
-                        ACCENT
+                        t.accent
+                    } else if t.is_dark {
+                        Color32::from_rgb(100, 100, 100)
                     } else {
                         Color32::from_rgb(160, 160, 160)
                     };
@@ -179,7 +184,7 @@ pub fn show_layer_slider(
                         egui::Align2::LEFT_CENTER,
                         &layer_label,
                         egui::FontId::proportional(9.0),
-                        TEXT_SECONDARY,
+                        t.text_secondary,
                     );
 
                     // First layer button (bottom — lowest layer number)
@@ -190,7 +195,7 @@ pub fn show_layer_slider(
                         egui::vec2(44.0, btn_h),
                     );
                     let first_btn_bottom = egui::Button::new(
-                        RichText::new(&first_icon).size(16.0).color(TEXT_PRIMARY),
+                        RichText::new(&first_icon).size(16.0).color(t.text_primary),
                     )
                     .rounding(Rounding::same(6.0))
                     .fill(Color32::TRANSPARENT);
@@ -237,7 +242,7 @@ pub fn show_layer_slider(
                                 egui::Align2::CENTER_TOP,
                                 &z_text,
                                 egui::FontId::proportional(9.0),
-                                TEXT_SECONDARY,
+                                t.text_secondary,
                             );
                         }
                     }

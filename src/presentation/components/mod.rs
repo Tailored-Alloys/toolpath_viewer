@@ -11,6 +11,7 @@ pub mod gradient_scale;
 pub mod tool_panel;
 pub mod overlays;
 pub mod popups;
+pub mod preferences;
 
 pub use toolbar::*;
 pub use layer_slider::*;

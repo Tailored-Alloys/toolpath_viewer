@@ -10,9 +10,10 @@ use egui_winit::EventResponse;
 use egui_winit::State as EguiWinitState;
 use std::sync::Arc;
 
-use crate::application::ports::{GlobalUnits, ParameterMode};
+use crate::application::ports::{GlobalUnits, PaletteId, ParameterMode, ThemeMode};
 
 use super::layout::{LayoutRegions, VisibilityFlags, TOOLBAR_HEIGHT};
+use super::palette::{self, ThemePalette, ResolvedMode};
 use super::theme;
 use super::components;
 
@@ -153,6 +154,10 @@ pub struct UiOutput {
     pub vector_index: usize,
     /// Whether vector playback is active
     pub vector_view_playing: bool,
+    /// Whether theme/palette changed this frame
+    pub theme_changed: bool,
+    /// The active palette (for renderer sync)
+    pub active_palette: ThemePalette,
 }
 
 /// Vector count info for display
@@ -231,6 +236,18 @@ pub struct UiState {
     pub playback_time_accumulator: f64,
     /// Playback speed multiplier (e.g. 0.5, 1.0, 2.0, 5.0)
     pub playback_speed: f32,
+    /// Active theme mode
+    pub theme_mode: ThemeMode,
+    /// Active palette id (for the current resolved mode)
+    pub active_palette_id: PaletteId,
+    /// Resolved palette
+    pub active_palette: ThemePalette,
+    /// Whether the preferences dialog is open
+    pub show_preferences: bool,
+    /// Whether the system reports dark mode
+    pub system_is_dark: bool,
+    /// Whether theme/palette changed this frame (signals renderer update)
+    pub theme_changed: bool,
 }
 
 impl Default for UiState {
@@ -265,6 +282,12 @@ impl Default for UiState {
             vector_view_playing: false,
             playback_time_accumulator: 0.0,
             playback_speed: 1.0,
+            theme_mode: ThemeMode::default(),
+            active_palette_id: PaletteId::default(),
+            active_palette: ThemePalette::default(),
+            show_preferences: false,
+            system_is_dark: false,
+            theme_changed: false,
         }
     }
 }
@@ -274,8 +297,16 @@ impl UiState {
     /// preferences like global_units.
     pub fn reset_for_new_file(&mut self) {
         let preserved_units = self.global_units.clone();
+        let preserved_mode = self.theme_mode;
+        let preserved_palette = self.active_palette_id;
+        let preserved_pal_data = self.active_palette.clone();
+        let preserved_sys_dark = self.system_is_dark;
         *self = UiState::default();
         self.global_units = preserved_units;
+        self.theme_mode = preserved_mode;
+        self.active_palette_id = preserved_palette;
+        self.active_palette = preserved_pal_data;
+        self.system_is_dark = preserved_sys_dark;
     }
 }
 
@@ -406,6 +437,7 @@ impl UiRenderer {
                 &mut self.state.param_mode,
                 &mut self.state.show_file_info,
                 &mut self.state.show_controls,
+                &mut self.state.show_preferences,
                 &mut self.state.global_units,
             );
             open_file_requested = toolbar_out.open_file_requested;
@@ -481,6 +513,7 @@ impl UiRenderer {
                         &mut self.state.param_filter_max,
                         &self.state.param_ranges,
                         &self.state.global_units,
+                        &self.state.active_palette,
                     );
                 }
             }
@@ -557,8 +590,27 @@ impl UiRenderer {
                 components::show_controls_popup(ctx);
             }
 
+            // ── Preferences dialog ──
+            if self.state.show_preferences {
+                let prefs_out = components::preferences::show_preferences(
+                    ctx,
+                    &mut self.state.show_preferences,
+                    &mut self.state.theme_mode,
+                    &mut self.state.active_palette_id,
+                    self.state.system_is_dark,
+                    &self.state.active_palette,
+                );
+                if prefs_out.changed {
+                    if let Some(new_pal) = prefs_out.palette {
+                        self.state.active_palette = new_pal;
+                        self.state.theme_changed = true;
+                    }
+                }
+            }
+
             // ── Empty state message (no file loaded) ──
             if self.state.total_layers == 0 && self.state.loading_file.is_none() {
+                let t = theme::active();
                 let screen = ctx.screen_rect();
                 let center = egui::pos2(
                     screen.center().x,
@@ -573,21 +625,21 @@ impl UiRenderer {
                     egui::Align2::CENTER_CENTER,
                     "No file loaded",
                     egui::FontId::proportional(20.0),
-                    egui::Color32::from_rgb(160, 160, 160),
+                    t.text_secondary,
                 );
                 painter.text(
                     center + egui::vec2(0.0, 16.0),
                     egui::Align2::CENTER_CENTER,
                     "Drop an ILT file or press Ctrl+O to open",
                     egui::FontId::proportional(13.0),
-                    egui::Color32::from_rgb(190, 190, 190),
+                    t.text_secondary,
                 );
                 painter.text(
                     center + egui::vec2(0.0, 46.0),
                     egui::Align2::CENTER_CENTER,
                     crate::APP_DEVELOPER,
                     egui::FontId::proportional(11.0),
-                    egui::Color32::from_rgb(120, 120, 120),
+                    t.text_secondary,
                 );
             }
 
@@ -665,7 +717,7 @@ impl UiRenderer {
         // Store output for deferred painting
         self.pending_output = Some(full_output);
 
-        UiOutput {
+        let output = UiOutput {
             layer_index: self.state.current_layer,
             show_slices: self.state.show_slices,
             show_contours: self.state.show_contours,
@@ -688,7 +740,14 @@ impl UiRenderer {
             vector_view_enabled: self.state.vector_view_enabled,
             vector_index: self.state.current_vector_index,
             vector_view_playing: self.state.vector_view_playing,
-        }
+            theme_changed: self.state.theme_changed,
+            active_palette: self.state.active_palette.clone(),
+        };
+
+        // Clear the one-shot flag
+        self.state.theme_changed = false;
+
+        output
     }
 
     /// Paint the egui overlay. Must be called after `run_ui()` and after GL content is rendered.

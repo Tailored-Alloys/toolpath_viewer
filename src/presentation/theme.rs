@@ -1,50 +1,134 @@
 //! Theme Module
 //!
-//! Shared colors, font setup, and reusable UI helper widgets used across all components.
+//! Shared colors, font setup, and reusable UI helper widgets used across all
+//! components.  The `ActiveTheme` struct holds palette-derived `Color32`
+//! values that every component reads.  The static `ACTIVE` cell is set once
+//! per palette switch via `apply_theme()`.
 
 use egui::{Color32, Context, FontData, FontDefinitions, FontFamily, RichText, Rounding, Stroke, Vec2};
 use lucide_icons::LUCIDE_FONT_BYTES;
+use std::sync::OnceLock;
+use std::sync::RwLock;
+
+use crate::domain::value_objects::Color;
+use crate::presentation::palette::ThemePalette;
 
 // ── Font constants ───────────────────────────────────────────────────────
 
-/// Lucide font family name
 pub const LUCIDE_FONT: &str = "lucide";
 
-// ── Theme colors ─────────────────────────────────────────────────────────
+// ── Active theme (global, palette-driven) ────────────────────────────────
 
-pub const TOOLBAR_BG: Color32 = Color32::from_rgb(245, 245, 245);           // #F5F5F5
-pub const TOOLBAR_BORDER: Color32 = Color32::from_rgb(200, 200, 200);       // #C8C8C8
-pub const ACCENT: Color32 = Color32::from_rgb(25, 118, 210);                // #1976D2
-pub const ACCENT_LIGHT: Color32 = Color32::from_rgb(187, 222, 251);         // #BBDEFB
-pub const TOGGLE_ACTIVE_BG: Color32 = Color32::from_rgb(200, 230, 255);     // light blue
-pub const TOGGLE_INACTIVE_BG: Color32 = Color32::from_rgb(230, 230, 230);   // #E6E6E6
-pub const TEXT_PRIMARY: Color32 = Color32::from_rgb(33, 33, 33);            // #212121
-pub const TEXT_SECONDARY: Color32 = Color32::from_rgb(97, 97, 97);          // #616161
-pub const PANEL_BG: Color32 = Color32::from_rgb(255, 255, 255);             // white
+/// Convert domain `Color` (f32 RGBA) to egui `Color32` (u8 RGBA).
+pub fn to_color32(c: &Color) -> Color32 {
+    Color32::from_rgba_unmultiplied(
+        (c.r * 255.0) as u8,
+        (c.g * 255.0) as u8,
+        (c.b * 255.0) as u8,
+        (c.a * 255.0) as u8,
+    )
+}
+
+/// Runtime-resolved egui colors derived from the current `ThemePalette`.
+#[derive(Debug, Clone)]
+pub struct ActiveTheme {
+    pub toolbar_bg: Color32,
+    pub toolbar_border: Color32,
+    pub accent: Color32,
+    pub accent_light: Color32,
+    pub toggle_active_bg: Color32,
+    pub toggle_inactive_bg: Color32,
+    pub text_primary: Color32,
+    pub text_secondary: Color32,
+    pub panel_bg: Color32,
+    pub panel_bg_translucent: Color32,
+    pub panel_shadow: Color32,
+    pub is_dark: bool,
+}
+
+impl ActiveTheme {
+    pub fn from_palette(p: &ThemePalette) -> Self {
+        Self {
+            toolbar_bg: to_color32(&p.toolbar_bg),
+            toolbar_border: to_color32(&p.toolbar_border),
+            accent: to_color32(&p.accent),
+            accent_light: to_color32(&p.accent_light),
+            toggle_active_bg: to_color32(&p.toggle_active_bg),
+            toggle_inactive_bg: to_color32(&p.toggle_inactive_bg),
+            text_primary: to_color32(&p.text_primary),
+            text_secondary: to_color32(&p.text_secondary),
+            panel_bg: to_color32(&p.panel_bg),
+            panel_bg_translucent: to_color32(&p.panel_bg_translucent),
+            panel_shadow: to_color32(&p.panel_shadow),
+            is_dark: p.is_dark,
+        }
+    }
+}
+
+impl Default for ActiveTheme {
+    fn default() -> Self {
+        Self {
+            toolbar_bg: Color32::from_rgb(245, 245, 245),
+            toolbar_border: Color32::from_rgb(200, 200, 200),
+            accent: Color32::from_rgb(25, 118, 210),
+            accent_light: Color32::from_rgb(187, 222, 251),
+            toggle_active_bg: Color32::from_rgb(200, 230, 255),
+            toggle_inactive_bg: Color32::from_rgb(230, 230, 230),
+            text_primary: Color32::from_rgb(33, 33, 33),
+            text_secondary: Color32::from_rgb(97, 97, 97),
+            panel_bg: Color32::from_rgb(255, 255, 255),
+            panel_bg_translucent: Color32::from_rgba_premultiplied(255, 255, 255, 230),
+            panel_shadow: Color32::from_rgba_premultiplied(0, 0, 0, 40),
+            is_dark: false,
+        }
+    }
+}
+
+/// Global active theme (read via `active()`).
+static ACTIVE: OnceLock<RwLock<ActiveTheme>> = OnceLock::new();
+
+fn theme_lock() -> &'static RwLock<ActiveTheme> {
+    ACTIVE.get_or_init(|| RwLock::new(ActiveTheme::default()))
+}
+
+/// Get a snapshot of the current active theme.
+pub fn active() -> ActiveTheme {
+    theme_lock().read().unwrap().clone()
+}
+
+// ── Legacy const aliases (delegate to active theme) ──────────────────────
+// Components that already import these names will keep compiling.  The values
+// come from the light-default palette, matching the old hard-coded constants.
+// New code should call `theme::active()` instead.
+
+pub const TOOLBAR_BG: Color32 = Color32::from_rgb(245, 245, 245);
+pub const TOOLBAR_BORDER: Color32 = Color32::from_rgb(200, 200, 200);
+pub const ACCENT: Color32 = Color32::from_rgb(25, 118, 210);
+pub const ACCENT_LIGHT: Color32 = Color32::from_rgb(187, 222, 251);
+pub const TOGGLE_ACTIVE_BG: Color32 = Color32::from_rgb(200, 230, 255);
+pub const TOGGLE_INACTIVE_BG: Color32 = Color32::from_rgb(230, 230, 230);
+pub const TEXT_PRIMARY: Color32 = Color32::from_rgb(33, 33, 33);
+pub const TEXT_SECONDARY: Color32 = Color32::from_rgb(97, 97, 97);
+pub const PANEL_BG: Color32 = Color32::from_rgb(255, 255, 255);
 pub const PANEL_SHADOW: Color32 = Color32::from_rgba_premultiplied(0, 0, 0, 40);
-
-/// Semi-transparent white for floating panel backgrounds
 pub const PANEL_BG_TRANSLUCENT: Color32 = Color32::from_rgba_premultiplied(255, 255, 255, 230);
 
 // ── Font setup ───────────────────────────────────────────────────────────
 
-/// Set up fonts including the Lucide icon font
+/// Set up fonts including the Lucide icon font.
 pub fn setup_fonts(ctx: &Context) {
     let mut fonts = FontDefinitions::default();
 
-    // Add lucide font
     fonts.font_data.insert(
         LUCIDE_FONT.to_owned(),
         FontData::from_static(LUCIDE_FONT_BYTES),
     );
 
-    // Add lucide as a fallback for proportional fonts so icons render in text
     fonts.families
         .entry(FontFamily::Proportional)
         .or_default()
         .push(LUCIDE_FONT.to_owned());
 
-    // Also register as its own family for explicit use
     fonts.families.insert(
         FontFamily::Name(LUCIDE_FONT.into()),
         vec![LUCIDE_FONT.to_owned()],
@@ -53,47 +137,68 @@ pub fn setup_fonts(ctx: &Context) {
     ctx.set_fonts(fonts);
 }
 
-/// Apply the light theme to the egui context
-pub fn apply_light_theme(ctx: &Context) {
-    let mut visuals = egui::Visuals::light();
-    visuals.panel_fill = TOOLBAR_BG;
-    visuals.window_fill = PANEL_BG;
+// ── Theme application ────────────────────────────────────────────────────
+
+/// Apply a palette to egui visuals and update the global `ActiveTheme`.
+pub fn apply_theme(ctx: &Context, palette: &ThemePalette) {
+    let at = ActiveTheme::from_palette(palette);
+
+    // Store globally
+    {
+        let mut lock = theme_lock().write().unwrap();
+        *lock = at.clone();
+    }
+
+    // Build egui visuals
+    let mut visuals = if palette.is_dark {
+        egui::Visuals::dark()
+    } else {
+        egui::Visuals::light()
+    };
+
+    visuals.panel_fill = at.toolbar_bg;
+    visuals.window_fill = at.panel_bg;
     visuals.window_rounding = Rounding::same(8.0);
     visuals.window_shadow = egui::epaint::Shadow {
         offset: egui::vec2(0.0, 2.0),
         blur: 8.0,
         spread: 0.0,
-        color: PANEL_SHADOW,
+        color: at.panel_shadow,
     };
-    visuals.widgets.inactive.bg_fill = TOGGLE_INACTIVE_BG;
-    visuals.widgets.inactive.fg_stroke = Stroke::new(1.0, TEXT_PRIMARY);
+    visuals.widgets.inactive.bg_fill = at.toggle_inactive_bg;
+    visuals.widgets.inactive.fg_stroke = Stroke::new(1.0, at.text_primary);
     visuals.widgets.inactive.rounding = Rounding::same(6.0);
-    visuals.widgets.hovered.bg_fill = ACCENT_LIGHT;
-    visuals.widgets.hovered.fg_stroke = Stroke::new(1.0, ACCENT);
+    visuals.widgets.hovered.bg_fill = at.accent_light;
+    visuals.widgets.hovered.fg_stroke = Stroke::new(1.0, at.accent);
     visuals.widgets.hovered.rounding = Rounding::same(6.0);
-    visuals.widgets.active.bg_fill = ACCENT;
-    visuals.widgets.active.fg_stroke = Stroke::new(1.0, Color32::WHITE);
+    visuals.widgets.active.bg_fill = at.accent;
+    visuals.widgets.active.fg_stroke = Stroke::new(1.0, if palette.is_dark { Color32::BLACK } else { Color32::WHITE });
     visuals.widgets.active.rounding = Rounding::same(6.0);
-    visuals.widgets.noninteractive.fg_stroke = Stroke::new(1.0, TEXT_PRIMARY);
-    visuals.selection.bg_fill = ACCENT;
-    visuals.selection.stroke = Stroke::new(1.0, Color32::WHITE);
+    visuals.widgets.noninteractive.fg_stroke = Stroke::new(1.0, at.text_primary);
+    visuals.selection.bg_fill = at.accent;
+    visuals.selection.stroke = Stroke::new(1.0, if palette.is_dark { Color32::BLACK } else { Color32::WHITE });
     ctx.set_visuals(visuals);
 
     let mut style = (*ctx.style()).clone();
     style.spacing.item_spacing = egui::vec2(8.0, 6.0);
     style.spacing.button_padding = egui::vec2(10.0, 6.0);
     style.spacing.window_margin = egui::Margin::same(12.0);
-    // Disable all animations to prevent slide-in / fade effects
     style.animation_time = 0.0;
     ctx.set_style(style);
+}
+
+/// Legacy: apply the light-default theme.
+pub fn apply_light_theme(ctx: &Context) {
+    apply_theme(ctx, &ThemePalette::default());
 }
 
 // ── Reusable widget helpers ──────────────────────────────────────────────
 
 /// Draw a toolbar toggle button (icon + active state). Returns true if clicked.
 pub fn toolbar_toggle(ui: &mut egui::Ui, icon: &str, active: &mut bool, tooltip: &str) -> bool {
-    let fill = if *active { TOGGLE_ACTIVE_BG } else { Color32::TRANSPARENT };
-    let text_color = if *active { ACCENT } else { TEXT_PRIMARY };
+    let t = self::active();
+    let fill = if *active { t.toggle_active_bg } else { Color32::TRANSPARENT };
+    let text_color = if *active { t.accent } else { t.text_primary };
     let btn = egui::Button::new(RichText::new(icon).size(20.0).color(text_color))
         .fill(fill)
         .rounding(Rounding::same(6.0))
@@ -112,8 +217,9 @@ pub fn toolbar_toggle_image(
     active: &mut bool,
     tooltip: &str,
 ) -> bool {
-    let fill = if *active { TOGGLE_ACTIVE_BG } else { Color32::TRANSPARENT };
-    let tint = if *active { ACCENT } else { TEXT_PRIMARY };
+    let t = self::active();
+    let fill = if *active { t.toggle_active_bg } else { Color32::TRANSPARENT };
+    let tint = if *active { t.accent } else { t.text_primary };
     let image = egui::Image::new(image_source)
         .fit_to_exact_size(egui::vec2(20.0, 20.0))
         .tint(tint);
@@ -130,8 +236,13 @@ pub fn toolbar_toggle_image(
 
 /// Draw a toolbar mode button (for parameter mode selection). Returns true if clicked.
 pub fn toolbar_mode_btn(ui: &mut egui::Ui, label: &str, is_selected: bool, tooltip: &str) -> bool {
-    let fill = if is_selected { ACCENT } else { TOGGLE_INACTIVE_BG };
-    let text_color = if is_selected { Color32::WHITE } else { TEXT_PRIMARY };
+    let t = active();
+    let fill = if is_selected { t.accent } else { t.toggle_inactive_bg };
+    let text_color = if is_selected {
+        if t.is_dark { Color32::BLACK } else { Color32::WHITE }
+    } else {
+        t.text_primary
+    };
     let btn = egui::Button::new(RichText::new(label).size(12.0).color(text_color))
         .fill(fill)
         .rounding(Rounding::same(6.0))
@@ -140,16 +251,17 @@ pub fn toolbar_mode_btn(ui: &mut egui::Ui, label: &str, is_selected: bool, toolt
     response.clicked()
 }
 
-/// Standard floating panel frame (translucent white with shadow and rounding)
+/// Standard floating panel frame (uses active theme colors).
 pub fn floating_panel_frame() -> egui::Frame {
+    let t = active();
     egui::Frame::none()
-        .fill(PANEL_BG_TRANSLUCENT)
+        .fill(t.panel_bg_translucent)
         .rounding(Rounding::same(10.0))
         .shadow(egui::epaint::Shadow {
             offset: egui::vec2(0.0, 2.0),
             blur: 8.0,
             spread: 0.0,
-            color: PANEL_SHADOW,
+            color: t.panel_shadow,
         })
         .inner_margin(egui::Margin::symmetric(8.0, 8.0))
 }

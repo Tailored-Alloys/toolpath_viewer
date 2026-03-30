@@ -15,6 +15,7 @@ mod app;
 mod window;
 mod input;
 pub mod layout;
+pub mod palette;
 pub mod theme;
 pub mod components;
 mod ui;

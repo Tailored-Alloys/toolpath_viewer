@@ -7,17 +7,18 @@
 use egui::{Context, RichText, Rounding};
 
 use crate::presentation::layout::TOOLBAR_HEIGHT;
-use crate::presentation::theme::*;
+use crate::presentation::theme;
 
 use super::super::ui::VectorCounts;
 
 /// Render the file info popup window.
 pub fn show_file_info(ctx: &Context, vector_counts: &VectorCounts) {
+    let t = theme::active();
     let file_icon = lucide_icons::Icon::FileText.unicode();
     egui::Window::new(
         RichText::new(format!("{} File Info", file_icon))
             .size(14.0)
-            .color(TEXT_PRIMARY),
+            .color(t.text_primary),
     )
     .collapsible(false)
     .resizable(false)
@@ -28,7 +29,7 @@ pub fn show_file_info(ctx: &Context, vector_counts: &VectorCounts) {
             RichText::new("Layer Info")
                 .size(13.0)
                 .strong()
-                .color(TEXT_PRIMARY),
+                .color(t.text_primary),
         );
         ui.add_space(4.0);
         let vc = vector_counts;
@@ -40,7 +41,7 @@ pub fn show_file_info(ctx: &Context, vector_counts: &VectorCounts) {
         ];
         for (label, val) in &info_items {
             ui.horizontal(|ui| {
-                ui.label(RichText::new(*label).size(12.0).color(TEXT_SECONDARY));
+                ui.label(RichText::new(*label).size(12.0).color(t.text_secondary));
                 ui.with_layout(
                     egui::Layout::right_to_left(egui::Align::Center),
                     |ui| {
@@ -48,7 +49,7 @@ pub fn show_file_info(ctx: &Context, vector_counts: &VectorCounts) {
                             RichText::new(format!("{}", val))
                                 .size(12.0)
                                 .strong()
-                                .color(TEXT_PRIMARY),
+                                .color(t.text_primary),
                         );
                     },
                 );
@@ -62,7 +63,7 @@ pub fn show_file_info(ctx: &Context, vector_counts: &VectorCounts) {
             RichText::new("Parameters")
                 .size(13.0)
                 .strong()
-                .color(TEXT_PRIMARY),
+                .color(t.text_primary),
         );
         ui.add_space(4.0);
 
@@ -75,7 +76,7 @@ pub fn show_file_info(ctx: &Context, vector_counts: &VectorCounts) {
         for (label, val) in &params {
             if let Some(v) = val {
                 ui.horizontal(|ui| {
-                    ui.label(RichText::new(*label).size(12.0).color(TEXT_SECONDARY));
+                    ui.label(RichText::new(*label).size(12.0).color(t.text_secondary));
                     ui.with_layout(
                         egui::Layout::right_to_left(egui::Align::Center),
                         |ui| {
@@ -83,7 +84,7 @@ pub fn show_file_info(ctx: &Context, vector_counts: &VectorCounts) {
                                 RichText::new(format!("{:.0}", v))
                                     .size(12.0)
                                     .strong()
-                                    .color(TEXT_PRIMARY),
+                                    .color(t.text_primary),
                             );
                         },
                     );
@@ -92,7 +93,7 @@ pub fn show_file_info(ctx: &Context, vector_counts: &VectorCounts) {
         }
         if vc.wait_count > 0 {
             ui.horizontal(|ui| {
-                ui.label(RichText::new("Wait times").size(12.0).color(TEXT_SECONDARY));
+                ui.label(RichText::new("Wait times").size(12.0).color(t.text_secondary));
                 ui.with_layout(
                     egui::Layout::right_to_left(egui::Align::Center),
                     |ui| {
@@ -100,7 +101,7 @@ pub fn show_file_info(ctx: &Context, vector_counts: &VectorCounts) {
                             RichText::new(format!("{}", vc.wait_count))
                                 .size(12.0)
                                 .strong()
-                                .color(TEXT_PRIMARY),
+                                .color(t.text_primary),
                         );
                     },
                 );
@@ -111,10 +112,11 @@ pub fn show_file_info(ctx: &Context, vector_counts: &VectorCounts) {
 
 /// Render the controls popup window (keyboard shortcut reference).
 pub fn show_controls_popup(ctx: &Context) {
+    let t = theme::active();
     egui::Window::new(
         RichText::new("⌨ Controls")
             .size(14.0)
-            .color(TEXT_PRIMARY),
+            .color(t.text_primary),
     )
     .collapsible(false)
     .resizable(false)
@@ -152,8 +154,8 @@ pub fn show_controls_popup(ctx: &Context) {
             .spacing([16.0, 4.0])
             .show(ui, |ui| {
                 for (key, action) in &shortcuts {
-                    ui.label(RichText::new(*key).size(12.0).strong().color(ACCENT));
-                    ui.label(RichText::new(*action).size(12.0).color(TEXT_PRIMARY));
+                    ui.label(RichText::new(*key).size(12.0).strong().color(t.accent));
+                    ui.label(RichText::new(*action).size(12.0).color(t.text_primary));
                     ui.end_row();
                 }
             });
@@ -164,7 +166,7 @@ pub fn show_controls_popup(ctx: &Context) {
         ui.label(
             RichText::new(format!("{} | {}", crate::APP_DEVELOPER, crate::APP_VERSION))
                 .size(10.0)
-                .color(TEXT_SECONDARY),
+                .color(t.text_secondary),
         );
     });
 }

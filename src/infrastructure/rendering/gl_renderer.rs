@@ -155,6 +155,8 @@ pub struct GlRenderer {
     /// Grid renderer
     grid_renderer: GridRenderer,
     color_scheme: ColorScheme,
+    /// Gradient color stops for parameter visualization
+    gradient_stops: Vec<(f32, Color)>,
     initialized: bool,
     /// Track last hatch count to reduce log spam
     last_hatch_count: usize,
@@ -180,6 +182,7 @@ impl GlRenderer {
             show_wait_markers: true,
             grid_renderer: GridRenderer::new(),
             color_scheme: ColorScheme::default(),
+            gradient_stops: Vec::new(),
             initialized: false,
             last_hatch_count: usize::MAX,
             logged_once: false,
@@ -189,6 +192,35 @@ impl GlRenderer {
     /// Set color scheme
     pub fn set_color_scheme(&mut self, scheme: ColorScheme) {
         self.color_scheme = scheme;
+    }
+
+    /// Set gradient stops for parameter visualization.
+    pub fn set_gradient_stops(&mut self, stops: Vec<(f32, Color)>) {
+        self.gradient_stops = stops;
+    }
+
+    /// Evaluate the active gradient (or fallback to viridis) at parameter t ∈ [0,1].
+    fn eval_gradient(&self, t: f32) -> Color {
+        let t = t.clamp(0.0, 1.0);
+        let stops = &self.gradient_stops;
+        if stops.len() < 2 {
+            return Color::viridis_gradient(t);
+        }
+        if t <= stops[0].0 {
+            return stops[0].1;
+        }
+        if t >= stops[stops.len() - 1].0 {
+            return stops[stops.len() - 1].1;
+        }
+        for i in 0..stops.len() - 1 {
+            let (t0, c0) = &stops[i];
+            let (t1, c1) = &stops[i + 1];
+            if t >= *t0 && t <= *t1 {
+                let s = if (t1 - t0).abs() < 1e-6 { 0.0 } else { (t - t0) / (t1 - t0) };
+                return c0.blend(c1, s);
+            }
+        }
+        stops[stops.len() - 1].1
     }
 
     /// Set horizontal view offset (to shift content away from UI panel)
@@ -207,7 +239,7 @@ impl GlRenderer {
     }
 
     /// Render the background grid before layer content.
-    pub fn render_grid(&mut self, view: &ViewState) -> RenderResult<()> {
+    pub fn render_grid(&mut self, view: &ViewState, minor_color: &Color, major_color: &Color) -> RenderResult<()> {
         let shader = self.shader.as_ref().ok_or_else(|| {
             RenderError::InvalidState("Shader not initialized".to_string())
         })?;
@@ -229,7 +261,7 @@ impl GlRenderer {
 
         let viewport_w = logical_w;
         let viewport_h = logical_h;
-        self.grid_renderer.prepare(view, viewport_w, viewport_h);
+        self.grid_renderer.prepare_with_colors(view, viewport_w, viewport_h, *minor_color, *major_color);
         self.grid_renderer.render();
 
         Ok(())
@@ -329,7 +361,7 @@ impl GlRenderer {
                         } else {
                             0.5
                         };
-                        Color::viridis_gradient(t)
+                        self.eval_gradient(t)
                     }
                     None => dim_color, // no param data, show dimmed
                 }
@@ -462,7 +494,7 @@ impl GlRenderer {
                     } else {
                         0.5
                     };
-                    let wait_color = Color::viridis_gradient(t);
+                    let wait_color = self.eval_gradient(t);
                     
                     match vector.vector_type {
                         VectorType::Hatch => {

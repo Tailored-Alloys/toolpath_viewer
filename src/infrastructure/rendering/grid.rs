@@ -52,6 +52,24 @@ impl GridRenderer {
         viewport_width: f32,
         viewport_height: f32,
     ) {
+        self.prepare_with_colors(
+            view,
+            viewport_width,
+            viewport_height,
+            Color::new(0.0, 0.0, 0.0, 0.08),
+            Color::new(0.0, 0.0, 0.0, 0.20),
+        );
+    }
+
+    /// Prepare grid geometry with custom minor/major colors.
+    pub fn prepare_with_colors(
+        &mut self,
+        view: &ViewState,
+        viewport_width: f32,
+        viewport_height: f32,
+        minor_color: Color,
+        major_color: Color,
+    ) {
         self.major_batch.clear();
         self.minor_batch.clear();
 
@@ -64,9 +82,6 @@ impl GridRenderer {
         let x_end = ((vis_max.x + pad) / minor_spacing).ceil() * minor_spacing;
         let y_start = ((vis_min.y - pad) / minor_spacing).floor() * minor_spacing;
         let y_end = ((vis_max.y + pad) / minor_spacing).ceil() * minor_spacing;
-
-        let minor_color = Color::new(0.0, 0.0, 0.0, 0.08);
-        let major_color = Color::new(0.0, 0.0, 0.0, 0.20);
 
         // Cap line count to prevent performance issues at extreme zoom
         let max_lines = 400;

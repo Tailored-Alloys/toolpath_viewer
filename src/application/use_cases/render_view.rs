@@ -5,6 +5,7 @@
 use crate::application::ports::{DisplayOptions, RenderResult, Renderer, ViewState};
 use crate::domain::entities::{Layer, SliceStack, VectorType};
 use crate::domain::value_objects::{Bounds2D, Color};
+use crate::presentation::palette::ThemePalette;
 
 /// Color scheme for rendering different vector types
 #[derive(Debug, Clone)]
@@ -45,6 +46,19 @@ impl ColorScheme {
             VectorType::Hatch => &self.hatch,
             VectorType::Support => &self.support,
             VectorType::Travel => &self.travel,
+        }
+    }
+
+    /// Build a ColorScheme from a ThemePalette.
+    pub fn from_palette(palette: &ThemePalette) -> Self {
+        Self {
+            boundary: palette.boundary,
+            contour: palette.contour,
+            base_contour: palette.base_contour,
+            depth_contour: palette.depth_contour,
+            hatch: palette.hatch,
+            support: palette.support,
+            travel: palette.travel,
         }
     }
 }

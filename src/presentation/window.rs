@@ -63,6 +63,8 @@ pub enum AppEvent {
     KeyAction(InputAction),
     /// File dropped
     FileDropped(String),
+    /// OS theme changed (dark/light)
+    SystemThemeChanged { is_dark: bool },
     /// Close requested
     CloseRequested,
 }
@@ -348,6 +350,11 @@ where
                         if let Some(path_str) = path.to_str() {
                             event_handler(&mut app_window, AppEvent::FileDropped(path_str.to_string()), raw_event);
                         }
+                    }
+
+                    WindowEvent::ThemeChanged(theme) => {
+                        let is_dark = *theme == winit::window::Theme::Dark;
+                        event_handler(&mut app_window, AppEvent::SystemThemeChanged { is_dark }, raw_event);
                     }
 
                     _ => {

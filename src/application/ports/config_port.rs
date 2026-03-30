@@ -34,6 +34,9 @@ pub struct AppConfig {
     pub display: DisplayConfig,
     /// Color settings
     pub colors: ColorConfig,
+    /// Theme settings
+    #[serde(default)]
+    pub theme: ThemeConfig,
     /// Recent files list
     pub recent_files: Vec<String>,
 }
@@ -44,7 +47,145 @@ impl Default for AppConfig {
             window: WindowConfig::default(),
             display: DisplayConfig::default(),
             colors: ColorConfig::default(),
+            theme: ThemeConfig::default(),
             recent_files: Vec::new(),
+        }
+    }
+}
+
+/// Theme and palette configuration (persisted)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ThemeConfig {
+    /// Theme mode: light / dark / system
+    pub mode: ThemeMode,
+    /// Palette id for light mode
+    pub light_palette: PaletteId,
+    /// Palette id for dark mode
+    pub dark_palette: PaletteId,
+    /// Custom palette overrides for light mode
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub custom_light: Option<CustomPaletteConfig>,
+    /// Custom palette overrides for dark mode
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub custom_dark: Option<CustomPaletteConfig>,
+}
+
+impl Default for ThemeConfig {
+    fn default() -> Self {
+        Self {
+            mode: ThemeMode::default(),
+            light_palette: PaletteId::default(),
+            dark_palette: PaletteId::default(),
+            custom_light: None,
+            custom_dark: None,
+        }
+    }
+}
+
+/// Overall application appearance mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ThemeMode {
+    Light,
+    Dark,
+    System,
+}
+
+impl Default for ThemeMode {
+    fn default() -> Self {
+        ThemeMode::System
+    }
+}
+
+impl ThemeMode {
+    pub fn label(&self) -> &'static str {
+        match self {
+            ThemeMode::Light => "Light",
+            ThemeMode::Dark => "Dark",
+            ThemeMode::System => "System",
+        }
+    }
+}
+
+/// Identifies a curated palette within a given mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PaletteId {
+    Default,
+    Professional,
+    Vibrant,
+    Ocean,
+    Warm,
+    ColorblindRG,
+    ColorblindBY,
+    HighContrast,
+    Custom,
+}
+
+impl Default for PaletteId {
+    fn default() -> Self {
+        PaletteId::Default
+    }
+}
+
+impl PaletteId {
+    /// Human-readable display name.
+    pub fn label(&self) -> &'static str {
+        match self {
+            PaletteId::Default => "Default",
+            PaletteId::Professional => "Professional",
+            PaletteId::Vibrant => "Vibrant",
+            PaletteId::Ocean => "Ocean",
+            PaletteId::Warm => "Warm",
+            PaletteId::ColorblindRG => "Colorblind Safe (R/G)",
+            PaletteId::ColorblindBY => "Colorblind Safe (B/Y)",
+            PaletteId::HighContrast => "High Contrast",
+            PaletteId::Custom => "Custom",
+        }
+    }
+
+    /// Accessibility badge text (if any).
+    pub fn badge(&self) -> Option<&'static str> {
+        match self {
+            PaletteId::ColorblindRG => Some("\u{267F} Deuteranopia safe"),
+            PaletteId::ColorblindBY => Some("\u{267F} Tritanopia safe"),
+            PaletteId::HighContrast => Some("\u{267F} WCAG AAA"),
+            _ => None,
+        }
+    }
+}
+
+/// Ordered list of all palette IDs.
+pub const ALL_PALETTE_IDS: &[PaletteId] = &[
+    PaletteId::Default,
+    PaletteId::Professional,
+    PaletteId::Vibrant,
+    PaletteId::Ocean,
+    PaletteId::Warm,
+    PaletteId::ColorblindRG,
+    PaletteId::ColorblindBY,
+    PaletteId::HighContrast,
+    PaletteId::Custom,
+];
+
+/// Per-color hex overrides for the Custom palette.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CustomPaletteConfig {
+    pub background: String,
+    pub boundary: String,
+    pub contour: String,
+    pub hatch: String,
+    pub accent: String,
+}
+
+impl Default for CustomPaletteConfig {
+    fn default() -> Self {
+        Self {
+            background: "#FAFAFA".into(),
+            boundary: "#2C3E50".into(),
+            contour: "#00BCD4".into(),
+            hatch: "#E91E63".into(),
+            accent: "#1976D2".into(),
         }
     }
 }
