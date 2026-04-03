@@ -12,7 +12,7 @@ use crate::presentation::theme;
 use super::super::ui::VectorCounts;
 
 /// Render the file info popup window.
-pub fn show_file_info(ctx: &Context, vector_counts: &VectorCounts) {
+pub fn show_file_info(ctx: &Context, open: &mut bool, vector_counts: &VectorCounts) {
     let t = theme::active();
     let file_icon = lucide_icons::Icon::FileText.unicode();
     egui::Window::new(
@@ -20,11 +20,14 @@ pub fn show_file_info(ctx: &Context, vector_counts: &VectorCounts) {
             .size(14.0)
             .color(t.text_primary),
     )
+    .open(open)
     .collapsible(false)
     .resizable(false)
     .default_width(220.0)
     .default_pos(egui::pos2(12.0, TOOLBAR_HEIGHT + 12.0))
     .show(ctx, |ui| {
+        // Elevate this window above Foreground-order overlays
+        ctx.move_to_top(ui.layer_id());
         ui.label(
             RichText::new("Layer Info")
                 .size(13.0)
@@ -111,18 +114,21 @@ pub fn show_file_info(ctx: &Context, vector_counts: &VectorCounts) {
 }
 
 /// Render the controls popup window (keyboard shortcut reference).
-pub fn show_controls_popup(ctx: &Context) {
+pub fn show_controls_popup(ctx: &Context, open: &mut bool) {
     let t = theme::active();
     egui::Window::new(
         RichText::new("⌨ Controls")
             .size(14.0)
             .color(t.text_primary),
     )
+    .open(open)
     .collapsible(false)
     .resizable(false)
     .default_width(240.0)
     .default_pos(egui::pos2(12.0, TOOLBAR_HEIGHT + 12.0))
     .show(ctx, |ui| {
+        // Elevate this window above Foreground-order overlays
+        ctx.move_to_top(ui.layer_id());
         let shortcuts = [
             ("↑ / ↓", "Navigate layers"),
             ("Page Up / Down", "Jump 10 layers"),

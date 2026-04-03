@@ -134,6 +134,9 @@ pub struct UiOutput {
     /// Parameter filter min/max
     pub param_filter_min: f32,
     pub param_filter_max: f32,
+    /// Wait time filter min/max
+    pub wait_filter_min: f32,
+    pub wait_filter_max: f32,
     /// Whether UI wants to repaint (hover, drag, etc.)
     pub needs_repaint: bool,
     /// User requested to open a file via load button
@@ -202,6 +205,10 @@ pub struct UiState {
     pub param_filter_min: f32,
     /// Parameter filter max
     pub param_filter_max: f32,
+    /// Wait time filter min
+    pub wait_filter_min: f32,
+    /// Wait time filter max
+    pub wait_filter_max: f32,
     /// Global parameter ranges from the file
     pub param_ranges: ParamRanges,
     /// Previous param mode (to detect mode changes and reset filter)
@@ -240,6 +247,10 @@ pub struct UiState {
     pub theme_mode: ThemeMode,
     /// Active palette id (for the current resolved mode)
     pub active_palette_id: PaletteId,
+    /// Palette id for light mode
+    pub light_palette_id: PaletteId,
+    /// Palette id for dark mode
+    pub dark_palette_id: PaletteId,
     /// Resolved palette
     pub active_palette: ThemePalette,
     /// Whether the preferences dialog is open
@@ -265,6 +276,8 @@ impl Default for UiState {
             param_mode: None,
             param_filter_min: 0.0,
             param_filter_max: f32::MAX,
+            wait_filter_min: 0.0,
+            wait_filter_max: f32::MAX,
             param_ranges: ParamRanges::default(),
             prev_param_mode: None,
             show_file_info: false,
@@ -284,6 +297,8 @@ impl Default for UiState {
             playback_speed: 1.0,
             theme_mode: ThemeMode::default(),
             active_palette_id: PaletteId::default(),
+            light_palette_id: PaletteId::default(),
+            dark_palette_id: PaletteId::default(),
             active_palette: ThemePalette::default(),
             show_preferences: false,
             system_is_dark: false,
@@ -299,12 +314,16 @@ impl UiState {
         let preserved_units = self.global_units.clone();
         let preserved_mode = self.theme_mode;
         let preserved_palette = self.active_palette_id;
+        let preserved_light_palette = self.light_palette_id;
+        let preserved_dark_palette = self.dark_palette_id;
         let preserved_pal_data = self.active_palette.clone();
         let preserved_sys_dark = self.system_is_dark;
         *self = UiState::default();
         self.global_units = preserved_units;
         self.theme_mode = preserved_mode;
         self.active_palette_id = preserved_palette;
+        self.light_palette_id = preserved_light_palette;
+        self.dark_palette_id = preserved_dark_palette;
         self.active_palette = preserved_pal_data;
         self.system_is_dark = preserved_sys_dark;
     }
@@ -405,6 +424,7 @@ impl UiRenderer {
         let flags = VisibilityFlags {
             has_layers: self.state.total_layers > 0,
             show_gradient: self.state.param_mode.is_some(),
+            show_wait_gradient: self.state.show_wait_markers && self.state.param_ranges.wait_time.is_some(),
             show_scale_bar: self.state.tool_state.show_scale_bar,
             show_file_info: self.state.show_file_info,
             show_controls: self.state.show_controls,
@@ -433,6 +453,7 @@ impl UiRenderer {
                 &mut self.state.show_contours,
                 &mut self.state.show_hatches,
                 &mut self.state.show_arrows,
+                &mut self.state.show_wait_markers,
                 &mut self.state.vector_view_enabled,
                 &mut self.state.param_mode,
                 &mut self.state.show_file_info,
@@ -447,7 +468,6 @@ impl UiRenderer {
                 let range = match self.state.param_mode {
                     Some(ParameterMode::Power) => self.state.param_ranges.power,
                     Some(ParameterMode::Speed) => self.state.param_ranges.speed,
-                    Some(ParameterMode::WaitTime) => self.state.param_ranges.wait_time,
                     None => None,
                 };
                 if let Some((lo, hi)) = range {
@@ -518,6 +538,19 @@ impl UiRenderer {
                 }
             }
 
+            // ── Wait time gradient scale ──
+            if let Some(ref wait_grad_region) = regions.wait_gradient_panel {
+                components::show_wait_gradient_scale(
+                    ctx,
+                    wait_grad_region,
+                    &mut self.state.wait_filter_min,
+                    &mut self.state.wait_filter_max,
+                    self.state.param_ranges.wait_time,
+                    &self.state.global_units,
+                    &self.state.active_palette,
+                );
+            }
+
             // ── Tool panel ──
             let tool_out = components::show_tool_panel(
                 ctx,
@@ -535,7 +568,9 @@ impl UiRenderer {
 
             // ── Overlays (rendered first so popups appear on top) ──
             if self.state.tool_state.show_scale_bar {
-                let left_offset = if let Some(ref gp) = regions.gradient_panel {
+                let left_offset = if let Some(ref wg) = regions.wait_gradient_panel {
+                    wg.pos.x + super::layout::GRADIENT_PANEL_WIDTH
+                } else if let Some(ref gp) = regions.gradient_panel {
                     gp.pos.x + super::layout::GRADIENT_PANEL_WIDTH
                 } else {
                     0.0
@@ -582,12 +617,12 @@ impl UiRenderer {
 
             // ── File info popup (rendered last for high z-order) ──
             if self.state.show_file_info {
-                components::show_file_info(ctx, &self.state.vector_counts);
+                components::show_file_info(ctx, &mut self.state.show_file_info, &self.state.vector_counts);
             }
 
             // ── Controls popup (rendered last for high z-order) ──
             if self.state.show_controls {
-                components::show_controls_popup(ctx);
+                components::show_controls_popup(ctx, &mut self.state.show_controls);
             }
 
             // ── Preferences dialog ──
@@ -597,6 +632,8 @@ impl UiRenderer {
                     &mut self.state.show_preferences,
                     &mut self.state.theme_mode,
                     &mut self.state.active_palette_id,
+                    &mut self.state.light_palette_id,
+                    &mut self.state.dark_palette_id,
                     self.state.system_is_dark,
                     &self.state.active_palette,
                 );
@@ -723,10 +760,12 @@ impl UiRenderer {
             show_contours: self.state.show_contours,
             show_hatches: self.state.show_hatches,
             show_arrows: self.state.show_arrows,
-            show_wait_markers: self.state.param_mode == Some(crate::application::ports::ParameterMode::WaitTime),
+            show_wait_markers: self.state.show_wait_markers,
             param_mode: self.state.param_mode,
             param_filter_min: self.state.param_filter_min,
             param_filter_max: self.state.param_filter_max,
+            wait_filter_min: self.state.wait_filter_min,
+            wait_filter_max: self.state.wait_filter_max,
             needs_repaint: needs_repaint
                 || zoom_in_requested
                 || zoom_out_requested

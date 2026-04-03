@@ -327,7 +327,21 @@ pub fn show_hover_tooltip(
     let lines = [
         ("Power", fmt(info.power, ParameterMode::Power), units.param_suffix(ParameterMode::Power)),
         ("Speed", fmt(info.speed, ParameterMode::Speed), units.param_suffix(ParameterMode::Speed)),
-        ("Wait", fmt(info.wait_time, ParameterMode::WaitTime), units.param_suffix(ParameterMode::WaitTime)),
+        ("Wait", {
+            match info.wait_time {
+                Some(v) => {
+                    let converted = units.time.from_us(v);
+                    if converted.abs() >= 100.0 {
+                        format!("{:.0}", converted)
+                    } else if converted.abs() >= 1.0 {
+                        format!("{:.1}", converted)
+                    } else {
+                        format!("{:.2}", converted)
+                    }
+                }
+                None => "\u{2014}".to_string(),
+            }
+        }, format!(" {}", units.time.label())),
     ];
 
     // Measure text to compute tooltip rectangle

@@ -26,6 +26,7 @@ pub fn show_toolbar(
     show_contours: &mut bool,
     show_infills: &mut bool,
     show_arrows: &mut bool,
+    show_wait_markers: &mut bool,
     show_vector_view: &mut bool,
     param_mode: &mut Option<ParameterMode>,
     show_file_info: &mut bool,
@@ -91,7 +92,9 @@ pub fn show_toolbar(
                     "Toggle Infills (H)",
                 );
                 toolbar_toggle(ui, icon_arrow, show_arrows, "Toggle Direction Arrows (A)");
-                // Wait markers toggle removed — shown when WaitTime param mode is active
+                let icon_timer = &LucideIcon::Timer.unicode().to_string();
+                toolbar_toggle(ui, icon_timer, show_wait_markers, "Toggle Wait Markers (T)");
+                // Wait markers toggle — independent of parameter coloring
                 // Scale bar toggle removed — always visible
                 let icon_play = &LucideIcon::Play.unicode().to_string();
                 toolbar_toggle(ui, icon_play, show_vector_view, "Toggle Vector View (N)");
@@ -108,7 +111,6 @@ pub fn show_toolbar(
                     (None, "None", "No parameter coloring (1)"),
                     (Some(ParameterMode::Power), "Power", "Color by laser power (2)"),
                     (Some(ParameterMode::Speed), "Speed", "Color by scan speed (3)"),
-                    (Some(ParameterMode::WaitTime), "Wait", "Color by wait time (4)"),
                 ];
                 for (mode, label, tip) in &modes {
                     if toolbar_mode_btn(ui, label, *param_mode == *mode, tip) {

@@ -96,7 +96,6 @@ impl Default for DisplayOptions {
 pub enum ParameterMode {
     Power,
     Speed,
-    WaitTime,
 }
 
 /// Grid unit for measurement display
@@ -218,7 +217,6 @@ impl GlobalUnits {
         match mode {
             ParameterMode::Power => format!("Power ({})", self.power.label()),
             ParameterMode::Speed => format!("Speed ({})", self.length.speed_label()),
-            ParameterMode::WaitTime => format!("Wait ({})", self.time.label()),
         }
     }
 
@@ -227,7 +225,6 @@ impl GlobalUnits {
         match mode {
             ParameterMode::Power => format!(" {}", self.power.label()),
             ParameterMode::Speed => format!(" {}", self.length.speed_label()),
-            ParameterMode::WaitTime => format!(" {}", self.time.label()),
         }
     }
 
@@ -236,7 +233,6 @@ impl GlobalUnits {
         match mode {
             ParameterMode::Power => self.power.from_watts(raw),
             ParameterMode::Speed => self.length.speed_from_mm_per_s(raw),
-            ParameterMode::WaitTime => self.time.from_us(raw),
         }
     }
 }

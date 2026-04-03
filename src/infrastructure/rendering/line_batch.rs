@@ -175,6 +175,18 @@ impl LineBatch {
         self.line_width = width;
     }
 
+    /// Get mutable access to internal vertices (for custom geometry like triangle fans).
+    pub fn vertices_mut(&mut self) -> &mut Vec<LineVertex> {
+        self.dirty = true;
+        &mut self.vertices
+    }
+
+    /// Push a raw segment (start index and vertex count).
+    pub fn push_segment(&mut self, start: usize, count: usize) {
+        self.segments.push(LineSegment { start, count });
+        self.dirty = true;
+    }
+
     /// Upload data to GPU
     fn upload(&mut self) {
         if !self.dirty || self.vertices.is_empty() {
@@ -245,6 +257,55 @@ impl LineBatch {
             gl::BindBuffer(gl::ARRAY_BUFFER, 0);
             gl::BindVertexArray(0);
             gl::Disable(gl::LINE_SMOOTH);
+        }
+    }
+
+    /// Render all segments as filled triangle fans.
+    /// Each segment must have a center vertex first, followed by perimeter vertices.
+    pub fn render_as_fans(&mut self) {
+        if self.vertices.is_empty() {
+            return;
+        }
+
+        self.upload();
+
+        unsafe {
+            gl::Enable(gl::BLEND);
+            gl::BlendFunc(gl::SRC_ALPHA, gl::ONE_MINUS_SRC_ALPHA);
+
+            gl::BindVertexArray(self.vao);
+            gl::BindBuffer(gl::ARRAY_BUFFER, self.vbo);
+
+            gl::VertexAttribPointer(
+                0,
+                2,
+                gl::FLOAT,
+                gl::FALSE,
+                mem::size_of::<LineVertex>() as GLsizei,
+                ptr::null(),
+            );
+            gl::EnableVertexAttribArray(0);
+
+            gl::VertexAttribPointer(
+                1,
+                4,
+                gl::FLOAT,
+                gl::FALSE,
+                mem::size_of::<LineVertex>() as GLsizei,
+                (2 * mem::size_of::<f32>()) as *const _,
+            );
+            gl::EnableVertexAttribArray(1);
+
+            for segment in &self.segments {
+                gl::DrawArrays(
+                    gl::TRIANGLE_FAN,
+                    segment.start as GLint,
+                    segment.count as GLsizei,
+                );
+            }
+
+            gl::BindBuffer(gl::ARRAY_BUFFER, 0);
+            gl::BindVertexArray(0);
         }
     }
 

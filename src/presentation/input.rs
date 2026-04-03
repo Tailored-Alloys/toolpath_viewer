@@ -63,8 +63,7 @@ pub enum InputAction {
     ParamModePower,
     /// Set parameter color mode: Speed
     ParamModeSpeed,
-    /// Set parameter color mode: WaitTime
-    ParamModeWaitTime,
+
     /// Toggle file info panel
     ToggleFileInfo,
     /// Toggle controls popup
@@ -177,7 +176,7 @@ pub fn key_to_action(key: &str, ctrl: bool, shift: bool) -> Option<InputAction> 
         ("1", false, false) => Some(InputAction::ParamModeNone),
         ("2", false, false) => Some(InputAction::ParamModePower),
         ("3", false, false) => Some(InputAction::ParamModeSpeed),
-        ("4", false, false) => Some(InputAction::ParamModeWaitTime),
+
 
         // File operations
         ("o", true, false) => Some(InputAction::OpenFile),

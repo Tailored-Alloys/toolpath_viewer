@@ -34,6 +34,8 @@ pub fn show_preferences(
     open: &mut bool,
     theme_mode: &mut ThemeMode,
     palette_id: &mut PaletteId,
+    light_palette_id: &mut PaletteId,
+    dark_palette_id: &mut PaletteId,
     system_is_dark: bool,
     current_palette: &ThemePalette,
 ) -> PreferencesOutput {
@@ -54,6 +56,8 @@ pub fn show_preferences(
             ctx.screen_rect().center().y - 200.0,
         ))
         .show(ctx, |ui| {
+            // Elevate this window above Foreground-order overlays
+            ctx.move_to_top(ui.layer_id());
             // ── Tab bar ──
             ui.horizontal(|ui| {
                 if tab_button(ui, "Appearance", selected_tab == Tab::Appearance, &t) {
@@ -68,10 +72,10 @@ pub fn show_preferences(
 
             match selected_tab {
                 Tab::Appearance => {
-                    output = appearance_tab(ui, theme_mode, palette_id, system_is_dark, &t);
+                    output = appearance_tab(ui, theme_mode, palette_id, light_palette_id, dark_palette_id, system_is_dark, &t);
                 }
                 Tab::Palette => {
-                    output = palette_tab(ui, theme_mode, palette_id, system_is_dark, current_palette, &t);
+                    output = palette_tab(ui, theme_mode, palette_id, light_palette_id, dark_palette_id, system_is_dark, current_palette, &t);
                 }
             }
         });
@@ -104,6 +108,8 @@ fn appearance_tab(
     ui: &mut egui::Ui,
     theme_mode: &mut ThemeMode,
     palette_id: &mut PaletteId,
+    light_palette_id: &mut PaletteId,
+    dark_palette_id: &mut PaletteId,
     system_is_dark: bool,
     t: &theme::ActiveTheme,
 ) -> PreferencesOutput {
@@ -124,10 +130,15 @@ fn appearance_tab(
         };
         if ui.radio(is_selected, RichText::new(label).size(12.0).color(t.text_primary)).clicked() && !is_selected {
             *theme_mode = *mode;
-            // Resolve palette for the new mode
+            // Resolve palette for the new mode using the correct per-mode palette ID
             let resolved = resolve_mode(*theme_mode, system_is_dark);
+            let mode_palette_id = match resolved {
+                ResolvedMode::Light => *light_palette_id,
+                ResolvedMode::Dark => *dark_palette_id,
+            };
+            *palette_id = mode_palette_id;
             let custom = None; // TODO: pass custom config
-            let new_palette = resolve_palette(resolved, *palette_id, custom);
+            let new_palette = resolve_palette(resolved, mode_palette_id, custom);
             theme::apply_theme(ui.ctx(), &new_palette);
             output.changed = true;
             output.palette = Some(new_palette);
@@ -159,6 +170,8 @@ fn palette_tab(
     ui: &mut egui::Ui,
     theme_mode: &mut ThemeMode,
     palette_id: &mut PaletteId,
+    light_palette_id: &mut PaletteId,
+    dark_palette_id: &mut PaletteId,
     system_is_dark: bool,
     _current_palette: &ThemePalette,
     t: &theme::ActiveTheme,
@@ -238,6 +251,11 @@ fn palette_tab(
 
             if response.clicked() && !is_selected {
                 *palette_id = *id;
+                // Update the correct per-mode palette ID
+                match resolved {
+                    ResolvedMode::Light => *light_palette_id = *id,
+                    ResolvedMode::Dark => *dark_palette_id = *id,
+                }
                 let new_palette = resolve_palette(resolved, *id, None);
                 theme::apply_theme(ui.ctx(), &new_palette);
                 output.changed = true;

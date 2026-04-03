@@ -7,7 +7,7 @@ use crate::application::use_cases::ColorScheme;
 use crate::domain::entities::{Layer, Vector, VectorType};
 use crate::domain::value_objects::{Color, Point2D};
 use crate::infrastructure::rendering::{
-    GridRenderer, LineBatch, ShaderProgram,
+    GridRenderer, LineBatch, LineVertex, ShaderProgram,
     DEFAULT_FRAGMENT_SHADER, DEFAULT_VERTEX_SHADER,
 };
 use log::{debug, info};
@@ -50,10 +50,13 @@ const ARROW_ARM_MIN: f32 = 0.02;
 /// Maximum arrow arm length (world units, mm) — prevents oversized arrows on long vectors.
 const ARROW_ARM_MAX: f32 = 0.15;
 
-/// Minimum star marker radius (world units, mm) — prevents invisible wait time markers.
-const STAR_RADIUS_MIN: f32 = 0.015;
-/// Maximum star marker radius (world units, mm) — prevents oversized wait time markers.
-const STAR_RADIUS_MAX: f32 = 0.12;
+/// Minimum circle marker radius (world units, mm) — prevents invisible wait time markers.
+const CIRCLE_RADIUS_MIN: f32 = 0.015;
+/// Maximum circle marker radius (world units, mm) — prevents oversized wait time markers.
+const CIRCLE_RADIUS_MAX: f32 = 0.12;
+
+/// Number of line segments used to approximate a circle.
+const CIRCLE_SEGMENTS: usize = 20;
 
 /// Generate per-vertex gradient colors for a polyline, fading from transparent
 /// at the start to the full color at the end to indicate scan direction.
@@ -102,25 +105,22 @@ fn add_arrowhead(batch: &mut LineBatch, tip: &Point2D, dx: f32, dy: f32, arm_len
     batch.add_line(tip, &right, color);
 }
 
-/// Add a star/asterisk marker (*) to `batch` centered at `center`.
-/// Draws 3 crossing line segments (|, /, \) of half-length `r`.
-fn add_star_marker(batch: &mut LineBatch, center: &Point2D, r: f32, color: &Color) {
-    // Vertical line |
-    let top = Point2D::new(center.x, center.y + r);
-    let bot = Point2D::new(center.x, center.y - r);
-    batch.add_line(&top, &bot, color);
-
-    // 60° line /
-    let cos60: f32 = 0.5;
-    let sin60: f32 = 0.866_025_4;
-    let a = Point2D::new(center.x + r * cos60, center.y + r * sin60);
-    let b = Point2D::new(center.x - r * cos60, center.y - r * sin60);
-    batch.add_line(&a, &b, color);
-
-    // 120° line \
-    let c = Point2D::new(center.x - r * cos60, center.y + r * sin60);
-    let d = Point2D::new(center.x + r * cos60, center.y - r * sin60);
-    batch.add_line(&c, &d, color);
+/// Add a filled circle marker to `batch` centered at `center` with radius `r`.
+/// Creates a center vertex + perimeter vertices for GL_TRIANGLE_FAN rendering.
+fn add_circle_marker(batch: &mut LineBatch, center: &Point2D, r: f32, color: &Color) {
+    let start = batch.vertex_count();
+    // Center vertex
+    batch.vertices_mut().push(LineVertex::from_point(center, color));
+    // Perimeter vertices (closing the circle)
+    for i in 0..=CIRCLE_SEGMENTS {
+        let angle = 2.0 * std::f32::consts::PI * (i as f32) / (CIRCLE_SEGMENTS as f32);
+        let pt = Point2D::new(
+            center.x + r * angle.cos(),
+            center.y + r * angle.sin(),
+        );
+        batch.vertices_mut().push(LineVertex::from_point(&pt, color));
+    }
+    batch.push_segment(start, CIRCLE_SEGMENTS + 2);
 }
 
 /// Compute marker size from layer bounds (0.5% of bounding diagonal).
@@ -331,7 +331,6 @@ impl GlRenderer {
 
         let marker_size = compute_marker_size(layer);
         let arrow_arm = (marker_size * 0.8).clamp(ARROW_ARM_MIN, ARROW_ARM_MAX);
-        let star_radius = (marker_size * 0.6).clamp(STAR_RADIUS_MIN, STAR_RADIUS_MAX);
         // Place arrows every `arrow_spacing` world-units along polylines
         let arrow_spacing = marker_size * 8.0;
 
@@ -348,7 +347,7 @@ impl GlRenderer {
                 let param_value = match param_mode {
                     ParameterMode::Power => vector.parameters.power,
                     ParameterMode::Speed => vector.parameters.speed,
-                    ParameterMode::WaitTime => vector.parameters.wait_time,
+
                 };
                 match param_value {
                     Some(val) => {
@@ -483,11 +482,11 @@ impl GlRenderer {
                 }
             }
 
-            // --- Wait time markers (at END of vectors with wait_time) ---
-            // Color based on wait time value using heat gradient
+            // --- Wait time markers (circles at END of vectors with wait_time) ---
+            // Circle size depends on wait time value; color from gradient
             if let Some(wait_val) = vector.parameters.wait_time {
                 if vector.points.len() >= 2 {
-                    // Compute normalized value for viridis gradient
+                    // Compute normalized value for gradient color and circle sizing
                     let range = options.wait_time_max - options.wait_time_min;
                     let t = if range > 0.0 {
                         (wait_val - options.wait_time_min) / range
@@ -495,17 +494,20 @@ impl GlRenderer {
                         0.5
                     };
                     let wait_color = self.eval_gradient(t);
+                    // Radius scales linearly with normalized wait time
+                    let circle_radius = (CIRCLE_RADIUS_MIN + t * (CIRCLE_RADIUS_MAX - CIRCLE_RADIUS_MIN))
+                        .clamp(CIRCLE_RADIUS_MIN, CIRCLE_RADIUS_MAX);
                     
                     match vector.vector_type {
                         VectorType::Hatch => {
-                            // Star at endpoint (p1) where the laser waits
+                            // Circle at endpoint (p1) where the laser waits
                             let p1 = &vector.points[1];
-                            add_star_marker(&mut self.wait_marker_batch, p1, star_radius, &wait_color);
+                            add_circle_marker(&mut self.wait_marker_batch, p1, circle_radius, &wait_color);
                         }
                         _ => {
-                            // For polylines, star at the last point
+                            // For polylines, circle at the last point
                             if let Some(last) = vector.points.last() {
-                                add_star_marker(&mut self.wait_marker_batch, last, star_radius, &wait_color);
+                                add_circle_marker(&mut self.wait_marker_batch, last, circle_radius, &wait_color);
                             }
                         }
                     }
@@ -579,7 +581,7 @@ impl GlRenderer {
         self.boundary_batch.render();
         self.arrow_batch.render();
         if self.show_wait_markers {
-            self.wait_marker_batch.render();
+            self.wait_marker_batch.render_as_fans();
         }
 
         Ok(())

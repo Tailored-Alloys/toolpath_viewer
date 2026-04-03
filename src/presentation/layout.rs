@@ -65,6 +65,8 @@ pub struct VisibilityFlags {
     pub has_layers: bool,
     /// Whether a parameter mode is active (controls gradient panel visibility)
     pub show_gradient: bool,
+    /// Whether wait markers are active (controls wait gradient panel visibility)
+    pub show_wait_gradient: bool,
     /// Whether the scale bar is visible (affects gradient bottom margin)
     pub show_scale_bar: bool,
     /// Whether file info popup is open
@@ -105,6 +107,9 @@ pub struct LayoutRegions {
 
     /// Left gradient scale — full height left side
     pub gradient_panel: Option<GradientRegion>,
+
+    /// Wait time gradient scale — next to gradient panel (or same position if no param gradient)
+    pub wait_gradient_panel: Option<GradientRegion>,
 
     /// Scale bar — bottom-left corner
     pub scale_bar: Option<Rect>,
@@ -241,7 +246,6 @@ impl LayoutRegions {
         // ── Gradient panel ──
         let gradient_panel = if flags.show_gradient {
             let grad_top = TOOLBAR_BOTTOM + PANEL_MARGIN;
-            // Scale bar shifts right when gradient is visible, so no vertical reservation needed
             let grad_bottom_margin = BOTTOM_MARGIN;
             let available_h = (screen_h - grad_top - grad_bottom_margin).max(200.0);
             let frame_overhead = 16.0; // inner_margin(12h, 8v) → 16px vertical
@@ -250,6 +254,31 @@ impl LayoutRegions {
 
             Some(GradientRegion {
                 pos: egui::pos2(PANEL_MARGIN, grad_top),
+                content_height: content_h,
+                width: GRADIENT_PANEL_WIDTH,
+                show_ticks,
+            })
+        } else {
+            None
+        };
+
+        // ── Wait gradient panel ──
+        let wait_gradient_panel = if flags.show_wait_gradient {
+            let grad_top = TOOLBAR_BOTTOM + PANEL_MARGIN;
+            let grad_bottom_margin = BOTTOM_MARGIN;
+            let available_h = (screen_h - grad_top - grad_bottom_margin).max(200.0);
+            let frame_overhead = 16.0;
+            let content_h = available_h - frame_overhead;
+            let show_ticks = available_h > GRADIENT_TICKS_MIN_HEIGHT;
+            // Position to the right of the param gradient panel if it's visible
+            let x = if flags.show_gradient {
+                PANEL_MARGIN + GRADIENT_PANEL_WIDTH + PANEL_GAP
+            } else {
+                PANEL_MARGIN
+            };
+
+            Some(GradientRegion {
+                pos: egui::pos2(x, grad_top),
                 content_height: content_h,
                 width: GRADIENT_PANEL_WIDTH,
                 show_ticks,
@@ -284,6 +313,7 @@ impl LayoutRegions {
             layer_slider,
             vector_slider,
             gradient_panel,
+            wait_gradient_panel,
             scale_bar,
             viewport,
         };
@@ -310,6 +340,10 @@ impl LayoutRegions {
         if let Some(ref grad) = self.gradient_panel {
             let r = Rect::from_min_size(grad.pos, egui::vec2(grad.width, grad.content_height + 16.0));
             rects.push(("gradient_panel", r));
+        }
+        if let Some(ref wg) = self.wait_gradient_panel {
+            let r = Rect::from_min_size(wg.pos, egui::vec2(wg.width, wg.content_height + 16.0));
+            rects.push(("wait_gradient_panel", r));
         }
 
         // Check pairwise (skip toolbar vs floating panels since they overlay the viewport)

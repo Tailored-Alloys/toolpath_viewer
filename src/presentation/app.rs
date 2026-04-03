@@ -147,6 +147,8 @@ impl App {
             // Sync into UI state
             ui.state.theme_mode = tc.mode;
             ui.state.active_palette_id = palette_id;
+            ui.state.light_palette_id = tc.light_palette;
+            ui.state.dark_palette_id = tc.dark_palette;
             ui.state.system_is_dark = sys_dark;
 
             // Sync into renderer
@@ -176,6 +178,8 @@ impl App {
                     if let Some((wmin, wmax)) = ranges.wait_time {
                         state.render.display_options.wait_time_min = wmin;
                         state.render.display_options.wait_time_max = wmax;
+                        ui.state.wait_filter_min = wmin;
+                        ui.state.wait_filter_max = wmax;
                     }
                     let nav_state = state.navigation.state();
                     ui.update_from_navigation(
@@ -377,6 +381,8 @@ fn poll_loading_state(
                     if let Some((wmin, wmax)) = ranges.wait_time {
                         state.render.display_options.wait_time_min = wmin;
                         state.render.display_options.wait_time_max = wmax;
+                        ui.state.wait_filter_min = wmin;
+                        ui.state.wait_filter_max = wmax;
                     }
                     update_window_title(window, state);
                     let nav_state = state.navigation.state();
@@ -639,9 +645,10 @@ fn handle_event(
             if ui.state.theme_mode == crate::application::ports::ThemeMode::System {
                 let resolved = resolve_mode(ui.state.theme_mode, is_dark);
                 let palette_id = match resolved {
-                    ResolvedMode::Light => ui.state.active_palette_id,
-                    ResolvedMode::Dark => ui.state.active_palette_id,
+                    ResolvedMode::Light => ui.state.light_palette_id,
+                    ResolvedMode::Dark => ui.state.dark_palette_id,
                 };
+                ui.state.active_palette_id = palette_id;
                 let palette = resolve_palette(resolved, palette_id, None);
                 crate::presentation::theme::apply_theme(&ui.ctx, &palette);
                 renderer.set_color_scheme(ColorScheme::from_palette(&palette));
@@ -772,7 +779,9 @@ fn handle_key_action(
         }
 
         InputAction::ToggleWaitMarkers => {
-            // Wait markers toggle removed — shown automatically when WaitTime param mode is active
+            ui.state.show_wait_markers = !ui.state.show_wait_markers;
+            state.needs_redraw = true;
+            window.request_redraw();
         }
 
         InputAction::ToggleScaleBar => {
@@ -836,12 +845,6 @@ fn handle_key_action(
 
         InputAction::ParamModeSpeed => {
             ui.state.param_mode = Some(ParameterMode::Speed);
-            state.needs_redraw = true;
-            window.request_redraw();
-        }
-
-        InputAction::ParamModeWaitTime => {
-            ui.state.param_mode = Some(ParameterMode::WaitTime);
             state.needs_redraw = true;
             window.request_redraw();
         }
@@ -1060,6 +1063,8 @@ fn render_frame(
         || state.render.display_options.param_mode != ui_output.param_mode
         || state.render.display_options.param_filter_min != ui_output.param_filter_min
         || state.render.display_options.param_filter_max != ui_output.param_filter_max
+        || state.render.display_options.wait_time_min != ui_output.wait_filter_min
+        || state.render.display_options.wait_time_max != ui_output.wait_filter_max
         || state.render.display_options.show_grid != ui_output.tool_state.show_grid
         || vector_view_changed;
 
@@ -1075,12 +1080,9 @@ fn render_frame(
         // Persist theme preferences
         let cm = JsonConfigManager::new();
         if let Ok(mut cfg) = cm.load() {
-            let resolved = resolve_mode(ui.state.theme_mode, ui.state.system_is_dark);
             cfg.theme.mode = ui.state.theme_mode;
-            match resolved {
-                ResolvedMode::Light => cfg.theme.light_palette = ui.state.active_palette_id,
-                ResolvedMode::Dark => cfg.theme.dark_palette = ui.state.active_palette_id,
-            }
+            cfg.theme.light_palette = ui.state.light_palette_id;
+            cfg.theme.dark_palette = ui.state.dark_palette_id;
             let _ = cm.save(&cfg);
         }
     }
@@ -1093,6 +1095,8 @@ fn render_frame(
     state.render.display_options.param_mode = ui_output.param_mode;
     state.render.display_options.param_filter_min = ui_output.param_filter_min;
     state.render.display_options.param_filter_max = ui_output.param_filter_max;
+    state.render.display_options.wait_time_min = ui_output.wait_filter_min;
+    state.render.display_options.wait_time_max = ui_output.wait_filter_max;
     state.render.display_options.show_grid = ui_output.tool_state.show_grid;
     state.render.display_options.grid_unit = ui_output.global_units.length;
     state.render.display_options.max_vector_index = if live_vector_view_enabled {
