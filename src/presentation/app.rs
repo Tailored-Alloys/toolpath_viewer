@@ -10,7 +10,8 @@ use std::time::Instant;
 use winit::event::WindowEvent;
 use winit::event_loop::EventLoop;
 
-use crate::application::ports::{ConfigManager, DisplayOptions, FileLoader, ParameterMode, Renderer};
+use crate::application::dto::FileCollection;
+use crate::application::ports::{ColorMode, ConfigManager, DisplayOptions, FileLoader, ParameterMode, Renderer, ViewMode};
 use crate::application::use_cases::{
     LoadToolpathUseCase, NavigateLayersUseCase, RenderViewUseCase, DisplayOption,
     ColorScheme,
@@ -24,33 +25,54 @@ use crate::infrastructure::rendering::GlRenderer;
 use crate::presentation::{
     AppEvent, AppWindow, InputAction, MouseButton, ParamRanges, WindowConfig,
     create_window, run_event_loop, UiRenderer, TOOLBAR_BOTTOM, ToolMode,
-    RulerMeasurement, SnapshotFormat,
+    RulerMeasurement, SnapshotFormat, TabManager,
+    SIDEBAR_WIDTH, ACTIVITY_BAR_WIDTH, STATUS_BAR_HEIGHT, VECTOR_PLAYER_HEIGHT,
+    TAB_BAR_HEIGHT,
 };
 use crate::presentation::palette::{self, ResolvedMode, ThemePalette, resolve_mode, resolve_palette};
 
 /// Actual rendered height of the top toolbar in pixels (includes frame padding)
 const UI_TOOLBAR_HEIGHT: f32 = TOOLBAR_BOTTOM;
 
+/// Compute the total header height (toolbar + optional tab bar)
+fn header_height(has_tab_bar: bool) -> f32 {
+    UI_TOOLBAR_HEIGHT + if has_tab_bar { TAB_BAR_HEIGHT } else { 0.0 }
+}
+
+/// Compute sidebar-aware viewport parameters.
+/// Returns (sidebar_width, viewport_width, viewport_height).
+fn viewport_params(ui: &UiRenderer, logical_w: f32, logical_h: f32, has_tab_bar: bool) -> (f32, f32, f32) {
+    let sidebar_w = ACTIVITY_BAR_WIDTH + if ui.state.sidebar_open { SIDEBAR_WIDTH } else { 0.0 };
+    let bottom_h = STATUS_BAR_HEIGHT
+        + if ui.state.vector_view_enabled { VECTOR_PLAYER_HEIGHT } else { 0.0 };
+    let tab_bar_h = if has_tab_bar { TAB_BAR_HEIGHT } else { 0.0 };
+    let vp_w = (logical_w - sidebar_w).max(1.0);
+    let vp_h = (logical_h - UI_TOOLBAR_HEIGHT - tab_bar_h - bottom_h).max(1.0);
+    (sidebar_w, vp_w, vp_h)
+}
+
 /// State of background file loading
 enum LoadingState {
     /// No loading in progress
     Idle,
-    /// Loading in progress — carries the display name of the file
+    /// Loading in progress — carries the display name(s)
     Loading(String),
-    /// Loading finished successfully
-    Complete(Toolpath, ParamRanges),
+    /// Loading finished successfully — one or more files loaded
+    Complete(Vec<(PathBuf, Toolpath, ParamRanges)>),
     /// Loading finished with an error
     Error(String),
 }
 
 /// Application state
 pub struct AppState {
-    /// Currently loaded toolpath
-    pub toolpath: Option<Toolpath>,
-    /// Layer navigation
+    /// Collection of loaded files
+    pub files: FileCollection,
+    /// Layer navigation (global fallback for overlay mode)
     pub navigation: NavigateLayersUseCase,
     /// Render state
     pub render: RenderViewUseCase,
+    /// Tab manager — per-tab camera, navigation, playback, toggles
+    pub tab_manager: TabManager,
     /// Whether a redraw is needed
     pub needs_redraw: bool,
     /// Shared loading state for background file loading
@@ -62,9 +84,10 @@ pub struct AppState {
 impl Default for AppState {
     fn default() -> Self {
         Self {
-            toolpath: None,
+            files: FileCollection::new(),
             navigation: NavigateLayersUseCase::new(),
             render: RenderViewUseCase::new(),
+            tab_manager: TabManager::new(),
             needs_redraw: true,
             loading_state: Arc::new(Mutex::new(LoadingState::Idle)),
             last_frame_time: None,
@@ -120,8 +143,8 @@ impl App {
         renderer.initialize(width, height)?;
         // Set DPI scale factor for correct logical-pixel projection
         renderer.set_scale_factor(app_window.scale_factor);
-        // Offset content center downward to account for top toolbar (in logical pixels)
-        renderer.set_view_offset_y(UI_TOOLBAR_HEIGHT / 2.0);
+        // GL projection offsets are updated dynamically in render_frame
+        // to account for sidebar and bottom panel visibility
 
         // Create UI renderer
         let mut ui = UiRenderer::new(app_window.glow_context.clone(), &app_window.window);
@@ -262,16 +285,22 @@ fn load_file_sync(
     info!("Loading file (sync): {}", path);
 
     let toolpath = use_case.execute(Path::new(path))?;
-    finalize_load(toolpath, state, viewport_width, viewport_height)
+    let ranges = compute_param_ranges(&toolpath);
+    let path_buf = PathBuf::from(path);
+    finalize_load(vec![(path_buf, toolpath, ranges.clone())], state, viewport_width, viewport_height)
 }
 
-/// Spawn a background thread to load a file. The result will be picked up
+/// Spawn a background thread to load one or more files. The result will be picked up
 /// by `poll_loading_state` on the next frame.
 fn start_background_load(
     use_case: &Arc<LoadToolpathUseCase>,
-    path: PathBuf,
+    paths: Vec<PathBuf>,
     loading_state: &Arc<Mutex<LoadingState>>,
 ) {
+    if paths.is_empty() {
+        return;
+    }
+
     // Check if a load is already in progress
     {
         let state = loading_state.lock().unwrap();
@@ -281,9 +310,13 @@ fn start_background_load(
         }
     }
 
-    let display_name = path.file_name()
-        .map(|n| n.to_string_lossy().to_string())
-        .unwrap_or_else(|| path.display().to_string());
+    let display_name = if paths.len() == 1 {
+        paths[0].file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| paths[0].display().to_string())
+    } else {
+        format!("{} files", paths.len())
+    };
 
     // Set state to Loading
     {
@@ -295,59 +328,85 @@ fn start_background_load(
     let loading_state = loading_state.clone();
 
     std::thread::spawn(move || {
-        info!("Background load started: {}", path.display());
-        match use_case.execute(&path) {
-            Ok(toolpath) => {
-                let ranges = compute_param_ranges(&toolpath);
-                let stats = toolpath.slice_stack.stats();
-                info!(
-                    "Background load complete: {} layers, {} vectors, {} points",
-                    stats.layer_count, stats.total_vectors, stats.total_points
-                );
-                let mut state = loading_state.lock().unwrap();
-                *state = LoadingState::Complete(toolpath, ranges);
+        info!("Background load started: {} file(s)", paths.len());
+        let mut results = Vec::new();
+        let mut errors = Vec::new();
+
+        for path in paths {
+            match use_case.execute(&path) {
+                Ok(toolpath) => {
+                    let ranges = compute_param_ranges(&toolpath);
+                    let stats = toolpath.slice_stack.stats();
+                    info!(
+                        "Loaded {}: {} layers, {} vectors",
+                        path.display(), stats.layer_count, stats.total_vectors
+                    );
+                    results.push((path, toolpath, ranges));
+                }
+                Err(e) => {
+                    error!("Failed to load {}: {}", path.display(), e);
+                    errors.push(format!("{}: {}", path.display(), e));
+                }
             }
-            Err(e) => {
-                error!("Background load failed: {}", e);
-                let mut state = loading_state.lock().unwrap();
-                *state = LoadingState::Error(format!("{}", e));
+        }
+
+        let mut state = loading_state.lock().unwrap();
+        if results.is_empty() {
+            *state = LoadingState::Error(errors.join("\n"));
+        } else {
+            if !errors.is_empty() {
+                warn!("Some files failed to load: {}", errors.join("; "));
             }
+            *state = LoadingState::Complete(results);
         }
     });
 }
 
-/// Finalize a loaded toolpath into the application state
+/// Finalize loaded files into the application state (appends to existing collection)
 fn finalize_load(
-    toolpath: Toolpath,
+    loaded_files: Vec<(PathBuf, Toolpath, ParamRanges)>,
     state: &mut AppState,
     viewport_width: f32,
     viewport_height: f32,
 ) -> Result<ParamRanges> {
-    let stats = toolpath.slice_stack.stats();
+    let is_first_load = state.files.is_empty();
 
-    info!(
-        "Loaded {} layers, {} vectors, {} points",
-        stats.layer_count, stats.total_vectors, stats.total_points
-    );
-
-    if let Some((min, max)) = toolpath.slice_stack.bounds() {
+    for (path, toolpath, _ranges) in loaded_files {
+        let stats = toolpath.slice_stack.stats();
         info!(
-            "Stack bounds: min=({:.3}, {:.3}), max=({:.3}, {:.3}), size=({:.3} x {:.3})",
-            min.x, min.y, max.x, max.y, max.x - min.x, max.y - min.y
+            "Adding file {}: {} layers, {} vectors, {} points",
+            path.display(), stats.layer_count, stats.total_vectors, stats.total_points
         );
+        let id = state.files.add_file(path, toolpath);
+        // Create a tab for the newly loaded file
+        // We need to get the SliceStack from the file we just added
+        if let Some(file) = state.files.files.iter().find(|f| f.id == id) {
+            state.tab_manager.open_tab(id, &file.toolpath.slice_stack);
+            // Fit the new tab's view to the file's bounds
+            if let Some((min, max)) = file.toolpath.slice_stack.bounds() {
+                let bounds = Bounds2D::new(min, max);
+                let render_height = (viewport_height - UI_TOOLBAR_HEIGHT - STATUS_BAR_HEIGHT).max(100.0);
+                if let Some(tab) = state.tab_manager.tab_mut(id) {
+                    tab.view_state.fit_to_bounds(&bounds, viewport_width, render_height);
+                }
+            }
+        }
     }
 
-    state.navigation.initialize(&toolpath.slice_stack);
+    // Re-initialize navigation from merged Z-heights
+    let z_heights = state.files.merged_z_heights();
+    state.navigation.initialize_from_z_heights(z_heights);
 
-    let render_height = (viewport_height - UI_TOOLBAR_HEIGHT).max(100.0);
-    state.render.fit_to_stack(
-        &toolpath.slice_stack,
-        viewport_width,
-        render_height,
-    );
+    // Fit view if first load (use effective viewport area)
+    let render_height = (viewport_height - UI_TOOLBAR_HEIGHT - STATUS_BAR_HEIGHT).max(100.0);
+    if is_first_load {
+        if let Some((min, max)) = state.files.merged_bounds() {
+            let bounds = Bounds2D::new(min, max);
+            state.render.view_state.fit_to_bounds(&bounds, viewport_width, render_height);
+        }
+    }
 
-    let ranges = compute_param_ranges(&toolpath);
-    state.toolpath = Some(toolpath);
+    let ranges = state.files.merged_param_ranges();
     state.needs_redraw = true;
 
     Ok(ranges)
@@ -370,12 +429,10 @@ fn poll_loading_state(
             ui.state.loading_file = Some(name);
             true // keep redrawing for spinner
         }
-        LoadingState::Complete(toolpath, _ranges) => {
-            // Loading done — reset all UI and render state to defaults
-            ui.state.reset_for_new_file();
-            state.render.display_options = DisplayOptions::default();
+        LoadingState::Complete(loaded_files) => {
+            // Loading done
             let (w, h) = window.logical_size();
-            match finalize_load(toolpath, state, w, h) {
+            match finalize_load(loaded_files, state, w, h) {
                 Ok(ranges) => {
                     ui.state.param_ranges = ranges.clone();
                     if let Some((wmin, wmax)) = ranges.wait_time {
@@ -384,6 +441,16 @@ fn poll_loading_state(
                         ui.state.wait_filter_min = wmin;
                         ui.state.wait_filter_max = wmax;
                     }
+                    ui.state.has_multiple_files = state.tab_manager.tab_count() > 1;
+                    // Sync active tab from TabManager into UI state
+                    ui.state.active_tab_file = state.tab_manager.active_tab_id;
+                    // Auto-set split partner if in split mode and none set
+                    if state.tab_manager.split_partner_id.is_none() && state.tab_manager.tab_count() >= 2 {
+                        state.tab_manager.split_partner_id = state.tab_manager.open_tab_ids
+                            .iter()
+                            .find(|&&id| Some(id) != state.tab_manager.active_tab_id)
+                            .copied();
+                    }
                     update_window_title(window, state);
                     let nav_state = state.navigation.state();
                     ui.update_from_navigation(
@@ -391,7 +458,7 @@ fn poll_loading_state(
                         nav_state.total_layers,
                         nav_state.current_z,
                     );
-                    info!("File loaded successfully");
+                    info!("File(s) loaded successfully");
                 }
                 Err(e) => {
                     error!("Failed to finalize loaded file: {}", e);
@@ -461,26 +528,47 @@ fn handle_event(
         AppEvent::MouseMove { x: _, y: _ } => {
             // Handle panning only when pointer is in viewport
             if pointer_in_viewport {
-                // Left-drag: selection zoom rectangle
+                let mouse = &window.input_state.mouse_pos;
+                let (logical_w, logical_h) = window.logical_size();
+                let has_tab_bar = state.tab_manager.has_tabs();
+                let (sidebar_w, vp_w, vp_h) = viewport_params(&ui, logical_w, logical_h, has_tab_bar);
+                let hdr_h = header_height(has_tab_bar);
+
+                // Track world position for status bar
+                let viewport_mouse_x = mouse.x - sidebar_w;
+                let viewport_mouse_y = mouse.y - hdr_h;
+                let world_pos = state.render.view_state.screen_to_world(
+                    viewport_mouse_x, viewport_mouse_y, vp_w, vp_h,
+                );
+                ui.state.mouse_world_pos = Some((world_pos.x, world_pos.y));
+
+                // Left-drag behavior depends on active tool mode
                 if window.input_state.left_pressed {
-                    let mouse = &window.input_state.mouse_pos;
-                    ui.state.tool_state.zoom_rect_end = Some(Point2D::new(mouse.x, mouse.y));
+                    match ui.state.tool_state.active_mode {
+                        ToolMode::Pan => {
+                            let delta = window.input_state.mouse_delta();
+                            state.render.pan(delta.x, -delta.y);
+                            state.needs_redraw = true;
+                            ui.state.hover_info = None;
+                        }
+                        ToolMode::ZoomSelect => {
+                            ui.state.tool_state.zoom_rect_end = Some(Point2D::new(mouse.x, mouse.y));
+                        }
+                        ToolMode::Ruler => {
+                            // Ruler drag: update live preview
+                            if ui.state.tool_state.ruler_start.is_some() {
+                                ui.state.tool_state.ruler_end = Some(world_pos);
+                            }
+                        }
+                    }
                     window.request_redraw();
                 }
                 // Ruler live preview (move cursor while placing second point)
                 else if ui.state.tool_state.ruler_start.is_some() {
-                    let mouse = &window.input_state.mouse_pos;
-                    let (logical_w, logical_h) = window.logical_size();
-                    let viewport_h = logical_h - UI_TOOLBAR_HEIGHT;
-                    let viewport_mouse_x = mouse.x;
-                    let viewport_mouse_y = mouse.y - UI_TOOLBAR_HEIGHT;
-                    let world = state.render.view_state.screen_to_world(
-                        viewport_mouse_x, viewport_mouse_y, logical_w, viewport_h,
-                    );
-                    ui.state.tool_state.ruler_end = Some(world);
+                    ui.state.tool_state.ruler_end = Some(world_pos);
                     window.request_redraw();
                 }
-                // Middle-drag: pan view
+                // Middle-drag: always pan (regardless of tool mode)
                 else if window.input_state.middle_pressed {
                     let delta = window.input_state.mouse_delta();
                     state.render.pan(delta.x, -delta.y);
@@ -495,6 +583,7 @@ fn handle_event(
                 }
             } else {
                 ui.state.hover_info = None;
+                ui.state.mouse_world_pos = None;
             }
         }
 
@@ -505,98 +594,74 @@ fn handle_event(
         AppEvent::MouseButton { button, pressed } => {
             if pointer_in_viewport {
                 let mouse = &window.input_state.mouse_pos;
+                let (logical_w, logical_h) = window.logical_size();
+                let has_tab_bar = state.tab_manager.has_tabs();
+                let (sidebar_w, vp_w, vp_h) = viewport_params(&ui, logical_w, logical_h, has_tab_bar);
+                let hdr_h = header_height(has_tab_bar);
 
                 match button {
-                    // Left button: selection zoom
+                    // Left button: behavior depends on active tool mode
                     MouseButton::Left if pressed => {
-                        ui.state.tool_state.zoom_rect_start = Some(Point2D::new(mouse.x, mouse.y));
-                        ui.state.tool_state.zoom_rect_end = Some(Point2D::new(mouse.x, mouse.y));
+                        match ui.state.tool_state.active_mode {
+                            ToolMode::Pan => {
+                                // Pan starts on drag (handled in MouseMove)
+                            }
+                            ToolMode::ZoomSelect => {
+                                ui.state.tool_state.zoom_rect_start = Some(Point2D::new(mouse.x, mouse.y));
+                                ui.state.tool_state.zoom_rect_end = Some(Point2D::new(mouse.x, mouse.y));
+                            }
+                            ToolMode::Ruler => {
+                                // Ruler click: place or complete measurement
+                                let viewport_mouse_x = mouse.x - sidebar_w;
+                                let viewport_mouse_y = mouse.y - hdr_h;
+                                let world = state.render.view_state.screen_to_world(
+                                    viewport_mouse_x, viewport_mouse_y, vp_w, vp_h,
+                                );
+                                place_ruler_point(ui, &state.render.view_state, world);
+                            }
+                        }
+                        window.request_redraw();
                     }
                     MouseButton::Left if !pressed => {
-                        // Zoom selection release → zoom to rectangle
-                        if let (Some(start), Some(end)) = (
-                            ui.state.tool_state.zoom_rect_start.take(),
-                            ui.state.tool_state.zoom_rect_end.take(),
-                        ) {
-                            let dx = (end.x - start.x).abs();
-                            let dy = (end.y - start.y).abs();
-                            if dx > 5.0 && dy > 5.0 {
-                                let (logical_w, logical_h) = window.logical_size();
-                                let viewport_h = logical_h - UI_TOOLBAR_HEIGHT;
-                                let viewport_w = logical_w;
+                        match ui.state.tool_state.active_mode {
+                            ToolMode::ZoomSelect => {
+                                // Zoom selection release → zoom to rectangle
+                                if let (Some(start), Some(end)) = (
+                                    ui.state.tool_state.zoom_rect_start.take(),
+                                    ui.state.tool_state.zoom_rect_end.take(),
+                                ) {
+                                    let dx = (end.x - start.x).abs();
+                                    let dy = (end.y - start.y).abs();
+                                    if dx > 5.0 && dy > 5.0 {
+                                        let w1 = state.render.view_state.screen_to_world(
+                                            start.x - sidebar_w, start.y - hdr_h, vp_w, vp_h,
+                                        );
+                                        let w2 = state.render.view_state.screen_to_world(
+                                            end.x - sidebar_w, end.y - hdr_h, vp_w, vp_h,
+                                        );
 
-                                let w1 = state.render.view_state.screen_to_world(
-                                    start.x, start.y - UI_TOOLBAR_HEIGHT, viewport_w, viewport_h,
-                                );
-                                let w2 = state.render.view_state.screen_to_world(
-                                    end.x, end.y - UI_TOOLBAR_HEIGHT, viewport_w, viewport_h,
-                                );
-
-                                let bounds = Bounds2D::new(
-                                    Point2D::new(w1.x.min(w2.x), w1.y.min(w2.y)),
-                                    Point2D::new(w1.x.max(w2.x), w1.y.max(w2.y)),
-                                );
-                                state.render.view_state.fit_to_bounds(&bounds, viewport_w, viewport_h);
-                                state.needs_redraw = true;
-                            }
-                            window.request_redraw();
-                        }
-                    }
-                    // Right button click: add/remove measurement point
-                    MouseButton::Right if pressed => {
-                        let (logical_w, logical_h) = window.logical_size();
-                        let viewport_h = logical_h - UI_TOOLBAR_HEIGHT;
-                        let viewport_mouse_x = mouse.x;
-                        let viewport_mouse_y = mouse.y - UI_TOOLBAR_HEIGHT;
-                        let world = state.render.view_state.screen_to_world(
-                            viewport_mouse_x, viewport_mouse_y, logical_w, viewport_h,
-                        );
-
-                        // Check if clicking near an existing measurement dot → remove it
-                        let hit_radius_world = 6.0 / state.render.view_state.zoom.max(0.001);
-                        let mut removed = false;
-                        ui.state.tool_state.ruler_measurements.retain(|m| {
-                            if removed { return true; }
-                            let near_start = m.start.distance_to(&world) < hit_radius_world;
-                            let near_end = m.end.distance_to(&world) < hit_radius_world;
-                            if near_start || near_end {
-                                removed = true;
-                                false // remove this measurement
-                            } else {
-                                true
-                            }
-                        });
-
-                        if !removed {
-                            // Also check if clicking on the pending start dot
-                            if let Some(start_pt) = ui.state.tool_state.ruler_start {
-                                if start_pt.distance_to(&world) < hit_radius_world {
-                                    // Cancel pending start point
-                                    ui.state.tool_state.ruler_start = None;
-                                    ui.state.tool_state.ruler_end = None;
-                                    removed = true;
+                                        let bounds = Bounds2D::new(
+                                            Point2D::new(w1.x.min(w2.x), w1.y.min(w2.y)),
+                                            Point2D::new(w1.x.max(w2.x), w1.y.max(w2.y)),
+                                        );
+                                        state.render.view_state.fit_to_bounds(&bounds, vp_w, vp_h);
+                                        state.needs_redraw = true;
+                                    }
+                                    window.request_redraw();
                                 }
                             }
+                            _ => {}
                         }
+                    }
+                    // Right button click: always ruler (add/remove measurement point)
+                    MouseButton::Right if pressed => {
+                        let viewport_mouse_x = mouse.x - sidebar_w;
+                        let viewport_mouse_y = mouse.y - hdr_h;
+                        let world = state.render.view_state.screen_to_world(
+                            viewport_mouse_x, viewport_mouse_y, vp_w, vp_h,
+                        );
 
-                        if !removed {
-                            if ui.state.tool_state.ruler_start.is_none() {
-                                // First click: place grey dot, cursor becomes crosshair
-                                ui.state.tool_state.ruler_start = Some(world);
-                                ui.state.tool_state.ruler_end = Some(world);
-                            } else {
-                                // Second click: complete the measurement
-                                let start = ui.state.tool_state.ruler_start.unwrap();
-                                let distance_mm = start.distance_to(&world);
-                                ui.state.tool_state.ruler_measurements.push(RulerMeasurement {
-                                    start,
-                                    end: world,
-                                    distance_mm,
-                                });
-                                ui.state.tool_state.ruler_start = None;
-                                ui.state.tool_state.ruler_end = None;
-                            }
-                        }
+                        place_ruler_point(ui, &state.render.view_state, world);
                         window.request_redraw();
                     }
                     _ => {}
@@ -608,19 +673,21 @@ fn handle_event(
             // Handle zoom only when pointer is in viewport
             if pointer_in_viewport {
                 let (logical_w, logical_h) = window.logical_size();
+                let has_tab_bar = state.tab_manager.has_tabs();
+                let (sidebar_w, vp_w, vp_h) = viewport_params(&ui, logical_w, logical_h, has_tab_bar);
+                let hdr_h = header_height(has_tab_bar);
                 let zoom_factor = if delta > 0.0 { 1.1 } else { 0.9 };
                 let mouse = &window.input_state.mouse_pos;
                 
-                // Mouse coords are already logical; subtract logical toolbar height
-                let viewport_mouse_y = mouse.y - UI_TOOLBAR_HEIGHT;
-                let viewport_height = logical_h - UI_TOOLBAR_HEIGHT;
+                let viewport_mouse_x = mouse.x - sidebar_w;
+                let viewport_mouse_y = mouse.y - hdr_h;
                 
                 state.render.zoom(
                     zoom_factor,
-                    mouse.x,
-                    viewport_height - viewport_mouse_y, // Flip Y
-                    logical_w,
-                    viewport_height,
+                    viewport_mouse_x,
+                    vp_h - viewport_mouse_y, // Flip Y
+                    vp_w,
+                    vp_h,
                 );
                 state.needs_redraw = true;
                 window.request_redraw();
@@ -636,7 +703,7 @@ fn handle_event(
 
         AppEvent::FileDropped(path) => {
             let path_buf = PathBuf::from(&path);
-            start_background_load(load_use_case, path_buf, &state.loading_state);
+            start_background_load(load_use_case, vec![path_buf], &state.loading_state);
             window.request_redraw();
         }
 
@@ -661,6 +728,12 @@ fn handle_event(
             }
             window.request_redraw();
         }
+    }
+
+    // ── Sync global view_state back to active tab after every event ──
+    // Pan/zoom modify state.render.view_state; persist those changes into the tab.
+    if let Some(tab) = state.tab_manager.active_tab_mut() {
+        tab.view_state = state.render.view_state.clone();
     }
 
     false
@@ -724,14 +797,11 @@ fn handle_key_action(
         }
 
         InputAction::ResetView => {
-            if let Some(ref toolpath) = state.toolpath {
+            if let Some((min, max)) = state.files.merged_bounds() {
                 let (logical_w, logical_h) = window.logical_size();
-                let render_height = (logical_h - UI_TOOLBAR_HEIGHT).max(100.0);
-                state.render.fit_to_stack(
-                    &toolpath.slice_stack,
-                    logical_w,
-                    render_height,
-                );
+                let (_sw, vp_w, vp_h) = viewport_params(ui, logical_w, logical_h, state.tab_manager.has_tabs());
+                let bounds = Bounds2D::new(min, max);
+                state.render.view_state.fit_to_bounds(&bounds, vp_w, vp_h);
                 state.needs_redraw = true;
                 window.request_redraw();
             }
@@ -790,25 +860,28 @@ fn handle_key_action(
 
         InputAction::ZoomIn => {
             let (logical_w, logical_h) = window.logical_size();
-            let viewport_height = (logical_h - UI_TOOLBAR_HEIGHT).max(100.0);
-            let viewport_width = logical_w;
-            state.render.zoom(1.2, viewport_width / 2.0, viewport_height / 2.0, viewport_width, viewport_height);
+            let (_sw, vp_w, vp_h) = viewport_params(ui, logical_w, logical_h, state.tab_manager.has_tabs());
+            state.render.zoom(1.2, vp_w / 2.0, vp_h / 2.0, vp_w, vp_h);
             state.needs_redraw = true;
             window.request_redraw();
         }
 
         InputAction::ZoomOut => {
             let (logical_w, logical_h) = window.logical_size();
-            let viewport_height = (logical_h - UI_TOOLBAR_HEIGHT).max(100.0);
-            let viewport_width = logical_w;
-            state.render.zoom(0.8, viewport_width / 2.0, viewport_height / 2.0, viewport_width, viewport_height);
+            let (_sw, vp_w, vp_h) = viewport_params(ui, logical_w, logical_h, state.tab_manager.has_tabs());
+            state.render.zoom(0.8, vp_w / 2.0, vp_h / 2.0, vp_w, vp_h);
             state.needs_redraw = true;
+            window.request_redraw();
+        }
+
+        InputAction::ToolPan => {
+            ui.state.tool_state.active_mode = ToolMode::Pan;
             window.request_redraw();
         }
 
         InputAction::ToggleZoomSelect => {
             if ui.state.tool_state.active_mode == ToolMode::ZoomSelect {
-                ui.state.tool_state.active_mode = ToolMode::None;
+                ui.state.tool_state.active_mode = ToolMode::Pan;
             } else {
                 ui.state.tool_state.active_mode = ToolMode::ZoomSelect;
             }
@@ -817,7 +890,7 @@ fn handle_key_action(
 
         InputAction::ToggleRuler => {
             if ui.state.tool_state.active_mode == ToolMode::Ruler {
-                ui.state.tool_state.active_mode = ToolMode::None;
+                ui.state.tool_state.active_mode = ToolMode::Pan;
                 ui.state.tool_state.ruler_start = None;
                 ui.state.tool_state.ruler_end = None;
             } else {
@@ -833,18 +906,21 @@ fn handle_key_action(
 
         InputAction::ParamModeNone => {
             ui.state.param_mode = None;
+            ui.state.color_mode = ColorMode::ByVectorType;
             state.needs_redraw = true;
             window.request_redraw();
         }
 
         InputAction::ParamModePower => {
             ui.state.param_mode = Some(ParameterMode::Power);
+            ui.state.color_mode = ColorMode::ByParameter(ParameterMode::Power);
             state.needs_redraw = true;
             window.request_redraw();
         }
 
         InputAction::ParamModeSpeed => {
             ui.state.param_mode = Some(ParameterMode::Speed);
+            ui.state.color_mode = ColorMode::ByParameter(ParameterMode::Speed);
             state.needs_redraw = true;
             window.request_redraw();
         }
@@ -909,13 +985,19 @@ fn handle_key_action(
             }
         }
 
+        InputAction::ToggleSidebar => {
+            ui.state.sidebar_open = !ui.state.sidebar_open;
+            state.needs_redraw = true;
+            window.request_redraw();
+        }
+
         InputAction::Quit => {
             // Handled in main event handler
         }
     }
 }
 
-/// Open a native file dialog and load the selected file in a background thread
+/// Open a native file dialog and load the selected file(s) in a background thread
 fn open_file_dialog(
     window: &mut AppWindow,
     state: &mut AppState,
@@ -930,16 +1012,50 @@ fn open_file_dialog(
         }
     }
 
-    let file = rfd::FileDialog::new()
+    let files = rfd::FileDialog::new()
         .add_filter("ILT/CLI Files", &["ilt", "cli"])
         .add_filter("All Files", &["*"])
-        .set_title("Open Toolpath File")
-        .pick_file();
+        .set_title("Open Toolpath Files")
+        .pick_files();
 
-    if let Some(path) = file {
-        info!("Opening file: {}", path.display());
-        start_background_load(load_use_case, path, &state.loading_state);
-        window.request_redraw();
+    if let Some(paths) = files {
+        if !paths.is_empty() {
+            info!("Opening {} file(s)", paths.len());
+            start_background_load(load_use_case, paths, &state.loading_state);
+            window.request_redraw();
+        }
+    }
+}
+
+/// Helper: accumulate vector type counts from a layer into totals
+fn accumulate_vector_counts(layer: &crate::domain::entities::Layer, counts: &mut crate::presentation::VectorCounts) {
+    for v in &layer.vectors {
+        match v.vector_type {
+            VectorType::Hatch => counts.hatches += 1,
+            VectorType::Contour | VectorType::BaseContour | VectorType::CoincidingContour | VectorType::DepthContour => counts.contours += 1,
+            VectorType::Boundary => counts.boundaries += 1,
+            _ => {}
+        }
+        counts.total_vectors += 1;
+        if v.parameters.wait_time.is_some() {
+            counts.wait_count += 1;
+        }
+    }
+    // Extract per-source parameters (vk/vs) from first layer that has them
+    if counts.vk_power.is_none() {
+        for (label, params) in &layer.params {
+            match label.as_str() {
+                "vk" => {
+                    counts.vk_power = params.power;
+                    counts.vk_speed = params.speed;
+                }
+                "vs" => {
+                    counts.vs_power = params.power;
+                    counts.vs_speed = params.speed;
+                }
+                _ => {}
+            }
+        }
     }
 }
 
@@ -956,42 +1072,125 @@ fn render_frame(
 
     // Update view transform for UI overlays (ruler, grid labels, scale bar)
     // All viewport calculations use logical pixels for consistency
-    let (viewport_width, logical_h) = window.logical_size();
-    let viewport_height = logical_h - UI_TOOLBAR_HEIGHT;
-    ui.update_view_transform(&state.render.view_state, viewport_width, viewport_height);
+    let (logical_w, logical_h) = window.logical_size();
+    let has_tab_bar = state.tab_manager.has_tabs();
+    let hdr_h = header_height(has_tab_bar);
+    let (sidebar_w, vp_w, vp_h) = viewport_params(ui, logical_w, logical_h, has_tab_bar);
+    ui.update_view_transform(&state.render.view_state, vp_w, vp_h);
+
+    // ── Sync active tab's ViewState ↔ global render view state ──
+    // Before rendering: copy active tab's camera into state.render.view_state
+    // so that non-split code paths (Overlay/Tab) use the per-tab camera.
+    if let Some(tab) = state.tab_manager.active_tab() {
+        state.render.view_state = tab.view_state.clone();
+    }
+
+    // Update GL projection center for sidebar + bottom panels
+    let bottom_h = STATUS_BAR_HEIGHT
+        + if ui.state.vector_view_enabled { VECTOR_PLAYER_HEIGHT } else { 0.0 };
+    let tab_bar_h = if has_tab_bar { TAB_BAR_HEIGHT } else { 0.0 };
+    renderer.set_view_offset_x(-sidebar_w / 2.0);
+    renderer.set_view_offset_y(((UI_TOOLBAR_HEIGHT + tab_bar_h) - bottom_h) / 2.0);
 
     // 1. Run egui logic to get current toggle/slider values (no painting yet)
-    let ui_output = ui.run_ui(&window.window);
+    let ui_output = ui.run_ui(&window.window, &state.files, &mut state.tab_manager);
 
-    // Handle file open request from Load button
-    if ui_output.open_file_requested {
+    // Handle file open request from Load button or file panel Add button
+    if ui_output.open_file_requested || ui_output.add_files_requested {
         open_file_dialog(window, state, ui, load_use_case);
+    }
+
+    // ── Handle tab bar actions ──
+    if let Some(switch_id) = ui_output.switch_tab {
+        state.tab_manager.set_active(switch_id);
+        ui.state.active_tab_file = Some(switch_id);
+        state.needs_redraw = true;
+    }
+    if let Some(close_id) = ui_output.close_tab {
+        state.files.toggle_visibility_off(close_id);
+        state.tab_manager.close_tab(close_id);
+        ui.state.active_tab_file = state.tab_manager.active_tab_id;
+        ui.state.has_multiple_files = state.tab_manager.tab_count() > 1;
+        // Re-initialize global navigation from merged Z-heights of remaining visible files
+        let z_heights = state.files.merged_z_heights();
+        state.navigation.initialize_from_z_heights(z_heights);
+        ui.state.param_ranges = state.files.merged_param_ranges();
+        state.needs_redraw = true;
+    }
+    if let Some(partner_id) = ui_output.split_partner_changed {
+        state.tab_manager.split_partner_id = Some(partner_id);
+        state.needs_redraw = true;
+    }
+
+    // Handle drag-to-split: set the dragged tab as split partner + switch to Split mode
+    if let Some(partner_id) = ui_output.drag_to_split {
+        state.tab_manager.split_partner_id = Some(partner_id);
+        ui.state.view_mode = ViewMode::Split;
+        ui.state.split_ratio = 0.5;
+        state.needs_redraw = true;
+    }
+
+    // Handle file removal from file panel
+    if let Some(remove_id) = ui_output.remove_file {
+        state.files.remove_file(remove_id);
+        state.tab_manager.remove_tab(remove_id);
+        // Re-initialize navigation from merged Z-heights
+        let z_heights = state.files.merged_z_heights();
+        state.navigation.initialize_from_z_heights(z_heights);
+        ui.state.has_multiple_files = state.tab_manager.tab_count() > 1;
+        ui.state.param_ranges = state.files.merged_param_ranges();
+        // Reset active tab if the removed file was active
+        ui.state.active_tab_file = state.tab_manager.active_tab_id;
+        let nav_state = state.navigation.state();
+        ui.update_from_navigation(nav_state.current_index, nav_state.total_layers, nav_state.current_z);
+        state.needs_redraw = true;
+    }
+
+    // Handle file visibility toggle from file panel
+    if let Some(toggle_id) = ui_output.toggle_file_visibility {
+        state.files.toggle_visibility(toggle_id);
+        // Re-initialize navigation from merged Z-heights of visible files
+        let z_heights = state.files.merged_z_heights();
+        state.navigation.initialize_from_z_heights(z_heights);
+        ui.state.param_ranges = state.files.merged_param_ranges();
+        let nav_state = state.navigation.state();
+        ui.update_from_navigation(nav_state.current_index, nav_state.total_layers, nav_state.current_z);
+        state.needs_redraw = true;
     }
 
     // Handle zoom in/out/fit button clicks from the tool panel
     if ui_output.zoom_in_requested {
-        state.render.zoom(1.2, viewport_width / 2.0, viewport_height / 2.0, viewport_width, viewport_height);
+        state.render.zoom(1.2, vp_w / 2.0, vp_h / 2.0, vp_w, vp_h);
         state.needs_redraw = true;
     }
     if ui_output.zoom_out_requested {
-        state.render.zoom(0.8, viewport_width / 2.0, viewport_height / 2.0, viewport_width, viewport_height);
+        state.render.zoom(0.8, vp_w / 2.0, vp_h / 2.0, vp_w, vp_h);
         state.needs_redraw = true;
     }
     if ui_output.fit_view_requested {
-        if let Some(ref toolpath) = state.toolpath {
-            let render_height = viewport_height.max(100.0);
-            state.render.fit_to_stack(&toolpath.slice_stack, viewport_width, render_height);
+        if let Some((min, max)) = state.files.merged_bounds() {
+            let render_height = vp_h.max(100.0);
+            let bounds = Bounds2D::new(min, max);
+            state.render.view_state.fit_to_bounds(&bounds, vp_w, render_height);
             state.needs_redraw = true;
         }
     }
 
-    // Handle layer changes from slider/buttons
-    let nav_state = state.navigation.state();
-    let layer_changed = ui_output.layer_index != nav_state.current_index;
+    // Handle layer changes from slider/buttons — now routed through active tab
+    let layer_changed = if let Some(tab) = state.tab_manager.active_tab() {
+        ui_output.layer_index != tab.navigation.state().current_index
+    } else {
+        false
+    };
     if layer_changed {
+        // The tab's navigation was already updated in run_ui sync-back
         state.navigation.go_to_layer(ui_output.layer_index);
         state.needs_redraw = true;
         // Stop playback on layer change
+        if let Some(tab) = state.tab_manager.active_tab_mut() {
+            tab.vector_view_playing = false;
+            tab.playback_time_accumulator = 0.0;
+        }
         ui.state.vector_view_playing = false;
         ui.state.playback_time_accumulator = 0.0;
     }
@@ -1007,44 +1206,61 @@ fn render_frame(
 
     let playback_active = ui.state.vector_view_playing && ui.state.vector_view_enabled;
     if playback_active {
-        if let Some(ref toolpath) = state.toolpath {
-            if let Some(layer) = state.navigation.get_current_layer(&toolpath.slice_stack) {
-                ui.state.playback_time_accumulator += delta_seconds * ui.state.playback_speed as f64;
+        // Use active tab's current Z for playback
+        let current_z = state.tab_manager.active_tab()
+            .map(|t| t.navigation.state().current_z)
+            .unwrap_or(state.navigation.state().current_z);
+        // For playback, use the active tab's file
+        let active_file_id = state.tab_manager.active_tab_id;
+        let playback_layer = active_file_id.and_then(|id| {
+            state.files.files.iter().find(|f| f.id == id)
+                .and_then(|f| f.toolpath.slice_stack.get_layer_by_z(current_z))
+        }).or_else(|| {
+            state.files.visible_files()
+                .filter_map(|f| f.toolpath.slice_stack.get_layer_by_z(current_z))
+                .next()
+        });
+        if let Some(layer) = playback_layer {
+            ui.state.playback_time_accumulator += delta_seconds * ui.state.playback_speed as f64;
 
-                // Advance through vectors based on their real scan time
-                loop {
-                    let idx = ui.state.current_vector_index;
-                    if idx >= layer.vectors.len().saturating_sub(1) {
-                        // Reached last vector — stop playback
-                        ui.state.vector_view_playing = false;
-                        ui.state.playback_time_accumulator = 0.0;
-                        break;
-                    }
+            // Advance through vectors based on their real scan time
+            loop {
+                let idx = ui.state.current_vector_index;
+                if idx >= layer.vectors.len().saturating_sub(1) {
+                    // Reached last vector — stop playback
+                    ui.state.vector_view_playing = false;
+                    ui.state.playback_time_accumulator = 0.0;
+                    break;
+                }
 
-                    let vec = &layer.vectors[idx];
-                    let length_mm = vec.length();
-                    let speed_mm_s = vec.parameters.speed.unwrap_or(1000.0) as f64;
-                    let scan_time_s = if speed_mm_s > 0.0 {
-                        length_mm as f64 / speed_mm_s
-                    } else {
-                        0.001 // fallback: 1ms
-                    };
-                    // Add wait time (stored in microseconds)
-                    let wait_s = vec.parameters.wait_time.unwrap_or(0.0) as f64 / 1_000_000.0;
-                    let total_duration = scan_time_s + wait_s;
+                let vec = &layer.vectors[idx];
+                let length_mm = vec.length();
+                let speed_mm_s = vec.parameters.speed.unwrap_or(1000.0) as f64;
+                let scan_time_s = if speed_mm_s > 0.0 {
+                    length_mm as f64 / speed_mm_s
+                } else {
+                    0.001 // fallback: 1ms
+                };
+                // Add wait time (stored in microseconds)
+                let wait_s = vec.parameters.wait_time.unwrap_or(0.0) as f64 / 1_000_000.0;
+                let total_duration = scan_time_s + wait_s;
 
-                    if ui.state.playback_time_accumulator >= total_duration {
-                        ui.state.playback_time_accumulator -= total_duration;
-                        ui.state.current_vector_index += 1;
-                        state.needs_redraw = true;
-                    } else {
-                        break;
-                    }
+                if ui.state.playback_time_accumulator >= total_duration {
+                    ui.state.playback_time_accumulator -= total_duration;
+                    ui.state.current_vector_index += 1;
+                    state.needs_redraw = true;
+                } else {
+                    break;
                 }
             }
         }
     }
-
+    // Sync playback state back to active tab (may have been advanced above)
+    if let Some(tab) = state.tab_manager.active_tab_mut() {
+        tab.current_vector_index = ui.state.current_vector_index;
+        tab.vector_view_playing = ui.state.vector_view_playing;
+        tab.playback_time_accumulator = ui.state.playback_time_accumulator;
+    }
     // Sync visibility toggles from UI to display options BEFORE rendering
     // Use live vector index from ui.state (may have been advanced by playback)
     let live_vector_index = ui.state.current_vector_index;
@@ -1111,78 +1327,288 @@ fn render_frame(
     let bg_color = state.render.display_options.background_color;
     renderer.clear(&bg_color)?;
 
-    // Render background grid BEFORE layer content
-    if state.render.display_options.show_grid {
-        renderer.render_grid(
-            &state.render.view_state,
-            &state.render.display_options.grid_minor_color,
-            &state.render.display_options.grid_major_color,
-        )?;
+    // Compute view mode and determine which files to render
+    let view_mode = ui_output.view_mode;
+    // Use active tab's current Z for layer lookup
+    let current_z = state.tab_manager.active_tab()
+        .map(|t| t.navigation.state().current_z)
+        .unwrap_or_else(|| state.navigation.state().current_z);
+    let color_mode = ui_output.color_mode;
+    let mut total_counts = crate::presentation::VectorCounts::default();
+    let mut any_layer_rendered = false;
+
+    // Save full viewport size for split mode restoration
+    let (full_phys_w, full_phys_h) = renderer.viewport_size();
+
+    match view_mode {
+        ViewMode::Overlay => {
+            // Clip GL rendering to the canvas area (excludes sidebar, toolbar, status bar)
+            let scale = window.scale_factor;
+            let phys_x = (sidebar_w * scale) as i32;
+            let phys_y = (bottom_h * scale) as i32; // GL Y=0 is bottom
+            let phys_w = (vp_w * scale) as u32;
+            let phys_h = (vp_h * scale) as u32;
+            renderer.set_sub_viewport(phys_x, phys_y, phys_w, phys_h);
+            renderer.set_view_offset_x(0.0);
+            renderer.set_view_offset_y(0.0);
+
+            // Render background grid BEFORE layer content
+            if state.render.display_options.show_grid {
+                renderer.render_grid(
+                    &state.render.view_state,
+                    &state.render.display_options.grid_minor_color,
+                    &state.render.display_options.grid_major_color,
+                )?;
+            }
+
+            // Overlay mode: render all visible files on the same viewport
+            for file in state.files.visible_files() {
+                if let Some(layer) = file.toolpath.slice_stack.get_layer_by_z(current_z) {
+                    accumulate_vector_counts(layer, &mut total_counts);
+
+                    state.render.display_options.file_color_override = match color_mode {
+                        ColorMode::ByFile => Some(file.color),
+                        _ => None,
+                    };
+                    state.render.display_options.param_mode = match color_mode {
+                        ColorMode::ByParameter(pm) => Some(pm),
+                        _ => None,
+                    };
+
+                    renderer.render_layer(
+                        layer,
+                        &state.render.view_state,
+                        &state.render.display_options,
+                    )?;
+                    any_layer_rendered = true;
+                }
+            }
+            state.render.display_options.file_color_override = None;
+
+            // Restore full viewport and view offsets
+            renderer.restore_full_viewport(full_phys_w, full_phys_h);
+            renderer.set_view_offset_x(-sidebar_w / 2.0);
+            renderer.set_view_offset_y(((UI_TOOLBAR_HEIGHT + tab_bar_h) - bottom_h) / 2.0);
+        }
+
+        ViewMode::Tab => {
+            // Clip GL rendering to the canvas area (excludes sidebar, toolbar, status bar)
+            let scale = window.scale_factor;
+            let phys_x = (sidebar_w * scale) as i32;
+            let phys_y = (bottom_h * scale) as i32;
+            let phys_w = (vp_w * scale) as u32;
+            let phys_h = (vp_h * scale) as u32;
+            renderer.set_sub_viewport(phys_x, phys_y, phys_w, phys_h);
+            renderer.set_view_offset_x(0.0);
+            renderer.set_view_offset_y(0.0);
+
+            // Render background grid
+            if state.render.display_options.show_grid {
+                renderer.render_grid(
+                    &state.render.view_state,
+                    &state.render.display_options.grid_minor_color,
+                    &state.render.display_options.grid_major_color,
+                )?;
+            }
+
+            // Tab mode: render only the active tab file
+            let active_id = ui_output.active_tab_file
+                .or_else(|| state.files.files.first().map(|f| f.id));
+
+            if let Some(id) = active_id {
+                if let Some(file) = state.files.files.iter().find(|f| f.id == id) {
+                    if let Some(layer) = file.toolpath.slice_stack.get_layer_by_z(current_z) {
+                        accumulate_vector_counts(layer, &mut total_counts);
+
+                        state.render.display_options.file_color_override = match color_mode {
+                            ColorMode::ByFile => Some(file.color),
+                            _ => None,
+                        };
+                        state.render.display_options.param_mode = match color_mode {
+                            ColorMode::ByParameter(pm) => Some(pm),
+                            _ => None,
+                        };
+
+                        renderer.render_layer(
+                            layer,
+                            &state.render.view_state,
+                            &state.render.display_options,
+                        )?;
+                        any_layer_rendered = true;
+                    }
+                }
+            }
+            state.render.display_options.file_color_override = None;
+
+            // Restore full viewport and view offsets
+            renderer.restore_full_viewport(full_phys_w, full_phys_h);
+            renderer.set_view_offset_x(-sidebar_w / 2.0);
+            renderer.set_view_offset_y(((UI_TOOLBAR_HEIGHT + tab_bar_h) - bottom_h) / 2.0);
+        }
+
+        ViewMode::Split => {
+            // Split mode: render active tab + split partner side-by-side.
+            // Both panes share the SAME camera (ViewState) — pan/zoom/layer
+            // are synchronized. Only the file content differs per pane.
+            let scale = window.scale_factor;
+            let sidebar_phys_w = (sidebar_w * scale) as u32;
+            let hdr_phys = (hdr_h * scale) as u32;
+            let bottom_phys = (bottom_h * scale) as u32;
+            let canvas_phys_h = full_phys_h.saturating_sub(hdr_phys).saturating_sub(bottom_phys);
+            let canvas_phys_w = full_phys_w.saturating_sub(sidebar_phys_w);
+            let split_ratio = ui_output.split_ratio;
+            // Reserve a physical-pixel gap between the two panes
+            let gap_phys = (super::layout::SPLIT_GAP * scale) as u32;
+            let usable_w = canvas_phys_w.saturating_sub(gap_phys);
+            let left_phys_w = (usable_w as f32 * split_ratio) as u32;
+            let right_phys_w = usable_w.saturating_sub(left_phys_w);
+
+            // GL Y=0 is at the window bottom, so the canvas bottom starts
+            // above the status bar / vector player.
+            let canvas_y = bottom_phys as i32;
+
+            // Zero out view offsets — sub-viewports are already cropped to
+            // each pane's exact rectangle, so no projection shifting needed.
+            renderer.set_view_offset_x(0.0);
+            renderer.set_view_offset_y(0.0);
+
+            // Shared camera for both panes
+            let shared_view = state.render.view_state.clone();
+
+            // Determine left (active) and right (partner) file IDs
+            let left_id = state.tab_manager.active_tab_id
+                .or_else(|| state.files.files.first().map(|f| f.id));
+            let right_id = state.tab_manager.split_partner_id
+                .or_else(|| {
+                    state.tab_manager.open_tab_ids.iter()
+                        .find(|&&id| Some(id) != left_id)
+                        .copied()
+                })
+                .or_else(|| state.files.files.iter().find(|f| Some(f.id) != left_id).map(|f| f.id));
+
+            // Render left half — active tab
+            if let Some(lid) = left_id {
+                renderer.set_sub_viewport(sidebar_phys_w as i32, canvas_y, left_phys_w, canvas_phys_h);
+                renderer.clear(&bg_color)?;  // Clear within scissor rect
+
+                if state.render.display_options.show_grid {
+                    renderer.render_grid(
+                        &shared_view,
+                        &state.render.display_options.grid_minor_color,
+                        &state.render.display_options.grid_major_color,
+                    )?;
+                }
+
+                if let Some(file) = state.files.files.iter().find(|f| f.id == lid) {
+                    if let Some(layer) = file.toolpath.slice_stack.get_layer_by_z(current_z) {
+                        accumulate_vector_counts(layer, &mut total_counts);
+
+                        state.render.display_options.file_color_override = match color_mode {
+                            ColorMode::ByFile => Some(file.color),
+                            _ => None,
+                        };
+                        state.render.display_options.param_mode = match color_mode {
+                            ColorMode::ByParameter(pm) => Some(pm),
+                            _ => None,
+                        };
+
+                        renderer.render_layer(
+                            layer,
+                            &shared_view,
+                            &state.render.display_options,
+                        )?;
+                        any_layer_rendered = true;
+                    }
+                }
+            }
+
+            // Render right half — split partner (offset past the gap)
+            if let Some(rid) = right_id {
+                renderer.set_sub_viewport(
+                    (sidebar_phys_w + left_phys_w + gap_phys) as i32,
+                    canvas_y,
+                    right_phys_w,
+                    canvas_phys_h,
+                );
+                renderer.clear(&bg_color)?;  // Clear within scissor rect
+
+                if state.render.display_options.show_grid {
+                    renderer.render_grid(
+                        &shared_view,
+                        &state.render.display_options.grid_minor_color,
+                        &state.render.display_options.grid_major_color,
+                    )?;
+                }
+
+                if let Some(file) = state.files.files.iter().find(|f| f.id == rid) {
+                    if let Some(layer) = file.toolpath.slice_stack.get_layer_by_z(current_z) {
+                        accumulate_vector_counts(layer, &mut total_counts);
+
+                        state.render.display_options.file_color_override = match color_mode {
+                            ColorMode::ByFile => Some(file.color),
+                            _ => None,
+                        };
+                        state.render.display_options.param_mode = match color_mode {
+                            ColorMode::ByParameter(pm) => Some(pm),
+                            _ => None,
+                        };
+
+                        renderer.render_layer(
+                            layer,
+                            &shared_view,
+                            &state.render.display_options,
+                        )?;
+                        any_layer_rendered = true;
+                    }
+                }
+            }
+
+            // Restore full viewport and view offsets before egui overlay
+            renderer.restore_full_viewport(full_phys_w, full_phys_h);
+            renderer.set_view_offset_x(-sidebar_w / 2.0);
+            renderer.set_view_offset_y(((UI_TOOLBAR_HEIGHT + tab_bar_h) - bottom_h) / 2.0);
+            state.render.display_options.file_color_override = None;
+        }
     }
 
-    // Render current layer if we have a toolpath
-    if let Some(ref toolpath) = state.toolpath {
-        if let Some(layer) = state.navigation.get_current_layer(&toolpath.slice_stack) {
-            // Count vectors by type for UI display
-            use crate::domain::entities::VectorType;
-            use crate::presentation::VectorCounts;
-            let mut counts = VectorCounts::default();
-            for v in &layer.vectors {
-                match v.vector_type {
-                    VectorType::Hatch => counts.hatches += 1,
-                    VectorType::Contour | VectorType::BaseContour | VectorType::CoincidingContour | VectorType::DepthContour => counts.contours += 1,
-                    VectorType::Boundary => counts.boundaries += 1,
-                    _ => {}
-                }
-                counts.total_vectors += 1;
-                if v.parameters.wait_time.is_some() {
-                    counts.wait_count += 1;
-                }
-            }
-            // Extract per-source parameters (vk/vs)
-            for (label, params) in &layer.params {
-                match label.as_str() {
-                    "vk" => {
-                        counts.vk_power = params.power;
-                        counts.vk_speed = params.speed;
-                    }
-                    "vs" => {
-                        counts.vs_power = params.power;
-                        counts.vs_speed = params.speed;
-                    }
-                    _ => {}
-                }
-            }
-            ui.state.vector_counts = counts.clone();
+    ui.state.vector_counts = total_counts.clone();
 
-            // Update vector count for the vector slider
+    // Update vector count for the vector slider (use active tab's file's layer)
+    if any_layer_rendered {
+        let active_layer = state.tab_manager.active_tab_id.and_then(|id| {
+            state.files.files.iter().find(|f| f.id == id)
+                .and_then(|f| f.toolpath.slice_stack.get_layer_by_z(current_z))
+        }).or_else(|| {
+            state.files.visible_files()
+                .filter_map(|f| f.toolpath.slice_stack.get_layer_by_z(current_z))
+                .next()
+        });
+        if let Some(layer) = active_layer {
             let layer_vec_count = layer.vector_count();
             if ui.state.total_vectors_in_layer != layer_vec_count {
                 ui.state.total_vectors_in_layer = layer_vec_count;
-                // Reset vector index to show all vectors when layer changes
                 if layer_changed {
                     ui.state.current_vector_index = layer_vec_count.saturating_sub(1);
                 }
             }
-
-            // Only log on layer/toggle changes to reduce spam
-            if layer_changed || toggles_changed {
-                info!(
-                    "Rendering layer {}: {} hatches, {} contours, {} boundaries | show_hatches={}",
-                    state.navigation.state().current_index,
-                    counts.hatches,
-                    counts.contours,
-                    counts.boundaries,
-                    state.render.display_options.show_hatches
-                );
+            // Sync vector counts to active tab
+            if let Some(tab) = state.tab_manager.active_tab_mut() {
+                tab.total_vectors_in_layer = ui.state.total_vectors_in_layer;
+                tab.current_vector_index = ui.state.current_vector_index;
             }
-
-            renderer.render_layer(
-                layer,
-                &state.render.view_state,
-                &state.render.display_options,
-            )?;
         }
+    }
+
+    // Only log on layer/toggle changes to reduce spam
+    if layer_changed || toggles_changed {
+        info!(
+            "Rendering layer z={:.3}: {} hatches, {} contours, {} boundaries | show_hatches={}",
+            current_z,
+            total_counts.hatches,
+            total_counts.contours,
+            total_counts.boundaries,
+            state.render.display_options.show_hatches
+        );
     }
 
     renderer.end_frame()?;
@@ -1218,56 +1644,114 @@ fn render_frame(
     Ok(())
 }
 
+/// Place or remove a ruler measurement point at the given world position.
+fn place_ruler_point(
+    ui: &mut UiRenderer,
+    view_state: &crate::application::ports::ViewState,
+    world: Point2D,
+) {
+    let hit_radius_world = 6.0 / view_state.zoom.max(0.001);
+    let mut removed = false;
+    ui.state.tool_state.ruler_measurements.retain(|m| {
+        if removed { return true; }
+        let near_start = m.start.distance_to(&world) < hit_radius_world;
+        let near_end = m.end.distance_to(&world) < hit_radius_world;
+        if near_start || near_end {
+            removed = true;
+            false
+        } else {
+            true
+        }
+    });
+
+    if !removed {
+        if let Some(start_pt) = ui.state.tool_state.ruler_start {
+            if start_pt.distance_to(&world) < hit_radius_world {
+                ui.state.tool_state.ruler_start = None;
+                ui.state.tool_state.ruler_end = None;
+                removed = true;
+            }
+        }
+    }
+
+    if !removed {
+        if ui.state.tool_state.ruler_start.is_none() {
+            ui.state.tool_state.ruler_start = Some(world);
+            ui.state.tool_state.ruler_end = Some(world);
+        } else {
+            let start = ui.state.tool_state.ruler_start.unwrap();
+            let distance_mm = start.distance_to(&world);
+            ui.state.tool_state.ruler_measurements.push(RulerMeasurement {
+                start,
+                end: world,
+                distance_mm,
+            });
+            ui.state.tool_state.ruler_start = None;
+            ui.state.tool_state.ruler_end = None;
+        }
+    }
+}
+
 /// Update hover tooltip info by hit-testing the nearest visible vector.
 fn update_hover_info(
     state: &AppState,
     ui: &mut UiRenderer,
     window: &AppWindow,
 ) {
-    let toolpath = match state.toolpath.as_ref() {
-        Some(t) => t,
-        None => { ui.state.hover_info = None; return; }
-    };
-    let layer = match state.navigation.get_current_layer(&toolpath.slice_stack) {
-        Some(l) => l,
-        None => { ui.state.hover_info = None; return; }
-    };
+    if state.files.is_empty() {
+        ui.state.hover_info = None;
+        return;
+    }
+    let current_z = state.navigation.state().current_z;
 
     let mouse = &window.input_state.mouse_pos;
     let (logical_w, logical_h) = window.logical_size();
-    let viewport_h = logical_h - UI_TOOLBAR_HEIGHT;
-    let viewport_w = logical_w;
+    let has_tab_bar = state.tab_manager.has_tabs();
+    let hdr_h = header_height(has_tab_bar);
+    let (sidebar_w, vp_w, vp_h) = viewport_params(ui, logical_w, logical_h, has_tab_bar);
     let world = state.render.view_state.screen_to_world(
-        mouse.x, mouse.y - UI_TOOLBAR_HEIGHT, viewport_w, viewport_h,
+        mouse.x - sidebar_w, mouse.y - hdr_h, vp_w, vp_h,
     );
 
-    // Build list of visible vector indices respecting current display options
     let opts = &state.render.display_options;
-    let visible_indices: Vec<usize> = layer.vectors.iter().enumerate()
-        .filter(|(_, v)| match v.vector_type {
-            VectorType::Boundary => opts.show_slices,
-            VectorType::Contour | VectorType::BaseContour | VectorType::CoincidingContour => opts.show_contours,
-            VectorType::DepthContour => opts.show_depth_contours,
-            VectorType::Hatch => opts.show_hatches,
-            VectorType::Support | VectorType::Travel => true,
-        })
-        .map(|(i, _)| i)
-        .collect();
-
     let threshold = 5.0 / state.render.view_state.zoom.max(0.001);
-    match find_nearest_vector(&world, layer, &visible_indices) {
-        Some(hit) if hit.distance <= threshold => {
-            let params = &layer.vectors[hit.vector_index].parameters;
-            ui.state.hover_info = Some(crate::presentation::HoverInfo {
-                power: params.power,
-                speed: params.speed,
-                wait_time: params.wait_time,
-                screen_pos: (mouse.x, mouse.y),
-            });
+
+    // Search across all visible files' layers at current Z
+    let mut best_hit: Option<(f32, Option<f32>, Option<f32>, Option<f32>)> = None;
+    for file in state.files.visible_files() {
+        if let Some(layer) = file.toolpath.slice_stack.get_layer_by_z(current_z) {
+            let visible_indices: Vec<usize> = layer.vectors.iter().enumerate()
+                .filter(|(_, v)| match v.vector_type {
+                    VectorType::Boundary => opts.show_slices,
+                    VectorType::Contour | VectorType::BaseContour | VectorType::CoincidingContour => opts.show_contours,
+                    VectorType::DepthContour => opts.show_depth_contours,
+                    VectorType::Hatch => opts.show_hatches,
+                    VectorType::Support | VectorType::Travel => true,
+                })
+                .map(|(i, _)| i)
+                .collect();
+
+            if let Some(hit) = find_nearest_vector(&world, layer, &visible_indices) {
+                if hit.distance <= threshold {
+                    let is_closer = best_hit.as_ref().map_or(true, |(d, _, _, _)| hit.distance < *d);
+                    if is_closer {
+                        let params = &layer.vectors[hit.vector_index].parameters;
+                        best_hit = Some((hit.distance, params.power, params.speed, params.wait_time));
+                    }
+                }
+            }
         }
-        _ => {
-            ui.state.hover_info = None;
-        }
+    }
+
+    if let Some((_dist, power, speed, wait_time)) = best_hit {
+        ui.state.hover_info = Some(crate::presentation::HoverInfo {
+            power,
+            speed,
+            wait_time,
+            screen_pos: (mouse.x, mouse.y),
+        });
+    } else {
+        ui.state.hover_info = None;
     }
 }
 
@@ -1330,14 +1814,39 @@ fn export_svg(
     use std::io::Write;
     use crate::domain::entities::VectorType;
 
-    let toolpath = state.toolpath.as_ref()
-        .ok_or_else(|| anyhow::anyhow!("No toolpath loaded"))?;
-    let layer = state.navigation.get_current_layer(&toolpath.slice_stack)
-        .ok_or_else(|| anyhow::anyhow!("No current layer"))?;
+    if state.files.is_empty() {
+        return Err(anyhow::anyhow!("No files loaded"));
+    }
+    let current_z = state.navigation.state().current_z;
 
-    // Compute bounds for SVG viewBox
-    let (min_pt, max_pt) = layer.bounds()
-        .unwrap_or((crate::domain::value_objects::Point2D::zero(), crate::domain::value_objects::Point2D::new(100.0, 100.0)));
+    // Collect all layers at current Z from visible files
+    let layers: Vec<&crate::domain::entities::Layer> = state.files.visible_files()
+        .filter_map(|f| f.toolpath.slice_stack.get_layer_by_z(current_z))
+        .collect();
+    if layers.is_empty() {
+        return Err(anyhow::anyhow!("No layers at current Z height"));
+    }
+
+    // Compute combined bounds
+    let (min_pt, max_pt) = {
+        let mut min_x = f32::MAX;
+        let mut min_y = f32::MAX;
+        let mut max_x = f32::MIN;
+        let mut max_y = f32::MIN;
+        for layer in &layers {
+            if let Some((lo, hi)) = layer.bounds() {
+                min_x = min_x.min(lo.x);
+                min_y = min_y.min(lo.y);
+                max_x = max_x.max(hi.x);
+                max_y = max_y.max(hi.y);
+            }
+        }
+        if min_x == f32::MAX {
+            (crate::domain::value_objects::Point2D::zero(), crate::domain::value_objects::Point2D::new(100.0, 100.0))
+        } else {
+            (crate::domain::value_objects::Point2D::new(min_x, min_y), crate::domain::value_objects::Point2D::new(max_x, max_y))
+        }
+    };
     let padding = 5.0;
     let vb_x = min_pt.x - padding;
     let vb_y = min_pt.y - padding;
@@ -1367,7 +1876,8 @@ fn export_svg(
         }
     };
 
-    for vector in &layer.vectors {
+    for layer in &layers {
+        for vector in &layer.vectors {
         // Apply same visibility filters as display
         let visible = match vector.vector_type {
             VectorType::Boundary => state.render.display_options.show_slices,
@@ -1408,6 +1918,7 @@ fn export_svg(
             ));
             svg.push('\n');
         }
+    }
     }
 
     svg.push_str("</svg>\n");

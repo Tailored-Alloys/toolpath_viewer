@@ -64,6 +64,8 @@ pub struct DisplayOptions {
     pub grid_minor_color: Color,
     /// Major grid line color
     pub grid_major_color: Color,
+    /// Override color for all vectors (used in "color by file" mode)
+    pub file_color_override: Option<Color>,
 }
 
 impl Default for DisplayOptions {
@@ -87,6 +89,7 @@ impl Default for DisplayOptions {
             max_vector_index: None,
             grid_minor_color: Color::new(0.0, 0.0, 0.0, 0.08),
             grid_major_color: Color::new(0.0, 0.0, 0.0, 0.20),
+            file_color_override: None,
         }
     }
 }
@@ -96,6 +99,29 @@ impl Default for DisplayOptions {
 pub enum ParameterMode {
     Power,
     Speed,
+}
+
+/// Color mode for the viewport
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ColorMode {
+    /// Color vectors by their type (contour, hatch, boundary, etc.)
+    ByVectorType,
+    /// Color all vectors in a file with that file's assigned color
+    ByFile,
+    /// Color vectors by a parameter value using a gradient
+    ByParameter(ParameterMode),
+}
+
+/// View mode controlling how multiple files are displayed
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ViewMode {
+    /// All visible files rendered on the same viewport (default)
+    #[default]
+    Overlay,
+    /// Show one file at a time, switchable via tabs
+    Tab,
+    /// Side-by-side split showing two files simultaneously
+    Split,
 }
 
 /// Grid unit for measurement display

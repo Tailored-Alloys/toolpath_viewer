@@ -113,11 +113,11 @@ pub fn show_file_info(ctx: &Context, open: &mut bool, vector_counts: &VectorCoun
     });
 }
 
-/// Render the controls popup window (keyboard shortcut reference).
+/// Render the shortcuts popup window (keyboard shortcut reference).
 pub fn show_controls_popup(ctx: &Context, open: &mut bool) {
     let t = theme::active();
     egui::Window::new(
-        RichText::new("⌨ Controls")
+        RichText::new("⌨ Shortcuts")
             .size(14.0)
             .color(t.text_primary),
     )
@@ -136,23 +136,25 @@ pub fn show_controls_popup(ctx: &Context, open: &mut bool) {
             ("Scroll Wheel", "Zoom in / out"),
             ("+ / -", "Zoom in / out"),
             ("Middle Drag", "Pan view"),
-            ("Left Drag", "Zoom to selection"),
+            ("Left Drag", "Tool action (pan / zoom / measure)"),
             ("Right Click", "Add measurement point"),
             ("R", "Reset view (fit to content)"),
             ("B", "Toggle boundaries"),
             ("C", "Toggle contours"),
             ("H", "Toggle hatches"),
             ("A", "Toggle direction arrows"),
-            ("T", "Toggle wait time markers"),
+            ("T", "Toggle dwell markers"),
             ("V", "Toggle scale bar"),
             ("G", "Toggle background grid"),
-            ("Z", "Toggle zoom selection mode"),
-            ("M", "Toggle ruler / measure tool"),
+            ("P", "Pan tool"),
+            ("Z", "Zoom selection tool"),
+            ("M", "Measure tool"),
+            ("E", "Toggle explorer sidebar"),
             ("X", "Clear measurements"),
             ("1 / 2 / 3", "Color: None / Power / Speed"),
-            ("I", "Toggle file info panel"),
+            ("I", "Toggle part info panel"),
             ("F1", "Toggle this help"),
-            ("Ctrl + O", "Open file"),
+            ("Ctrl + O", "Import file"),
             ("Ctrl + P", "Take snapshot"),
         ];
         egui::Grid::new("controls_grid")

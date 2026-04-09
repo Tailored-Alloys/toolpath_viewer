@@ -52,6 +52,27 @@ impl NavigateLayersUseCase {
         }
     }
 
+    /// Initialize from a pre-merged list of Z-heights (for multi-file mode).
+    /// Preserves the current Z position by snapping to the closest Z in the new list.
+    pub fn initialize_from_z_heights(&mut self, z_heights: Vec<f32>) {
+        let prev_z = self.state.current_z;
+        self.state.total_layers = z_heights.len();
+        self.state.z_heights = z_heights;
+
+        // Find closest Z-height to the previous position
+        if let Some((idx, &z)) = self.state.z_heights.iter().enumerate().min_by(|(_, a), (_, b)| {
+            let da = (*a - prev_z).abs();
+            let db = (*b - prev_z).abs();
+            da.partial_cmp(&db).unwrap()
+        }) {
+            self.state.current_index = idx;
+            self.state.current_z = z;
+        } else {
+            self.state.current_index = 0;
+            self.state.current_z = 0.0;
+        }
+    }
+
     /// Get current state
     pub fn state(&self) -> &LayerNavigationState {
         &self.state

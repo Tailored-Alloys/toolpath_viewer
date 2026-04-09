@@ -19,6 +19,8 @@ pub mod palette;
 pub mod theme;
 pub mod components;
 mod ui;
+mod cursors;
+pub mod tab_state;
 
 pub use app::*;
 pub use window::*;
@@ -26,3 +28,9 @@ pub use input::*;
 pub use ui::*;
 pub use layout::TOOLBAR_HEIGHT;
 pub use layout::TOOLBAR_BOTTOM;
+pub use layout::SIDEBAR_WIDTH;
+pub use layout::ACTIVITY_BAR_WIDTH;
+pub use layout::STATUS_BAR_HEIGHT;
+pub use layout::VECTOR_PLAYER_HEIGHT;
+pub use layout::TAB_BAR_HEIGHT;
+pub use tab_state::{TabManager, TabState};

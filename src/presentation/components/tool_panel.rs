@@ -1,10 +1,11 @@
 //! Tool Panel Component
 //!
-//! Top-right floating horizontal tool strip with:
-//! zoom in/out, fit view, zoom selection, ruler, scale bar toggle,
-//! grid toggle + unit selector, snapshot button.
+//! Top-right floating tool strip with:
+//! - Tool mode buttons: Pan, Zoom Selection, Measure
+//! - Zoom in/out, fit view
+//! - Grid toggle, snapshot, clear measurements
 
-use egui::{Align2, Color32, Context, RichText, Rounding, Vec2};
+use egui::{Color32, Context, RichText, Rounding, Vec2};
 use lucide_icons::Icon as LucideIcon;
 
 use crate::presentation::layout::ToolPanelRegion;
@@ -36,11 +37,11 @@ pub fn show_tool_panel(
 
     egui::Area::new(egui::Id::new("tool_panel_area"))
         .fixed_pos(region.anchor_pos)
-        .pivot(Align2::RIGHT_TOP)
         .order(egui::Order::Foreground)
         .interactable(true)
         .movable(false)
         .show(ctx, |ui| {
+            ui.set_max_width(36.0);
             egui::Frame::none()
                 .fill(t.panel_bg_translucent)
                 .rounding(Rounding::same(8.0))
@@ -52,8 +53,8 @@ pub fn show_tool_panel(
                 })
                 .inner_margin(egui::Margin::symmetric(4.0, 4.0))
                 .show(ui, |ui| {
-                    ui.horizontal(|ui| {
-                        ui.spacing_mut().item_spacing = egui::vec2(2.0, 0.0);
+                    ui.vertical(|ui| {
+                        ui.spacing_mut().item_spacing = egui::vec2(0.0, 2.0);
                         let btn_size = Vec2::new(28.0, 28.0);
                         let icon_sz = 14.0;
 
@@ -76,6 +77,35 @@ pub fn show_tool_panel(
                             .min_size(btn_size);
                             ui.add(btn).on_hover_text(tooltip).clicked()
                         };
+
+                        // ── Tool mode buttons ──
+                        if tool_btn(
+                            ui,
+                            &LucideIcon::Hand.unicode().to_string(),
+                            "Pan (P)",
+                            *tool_mode == ToolMode::Pan,
+                        ) {
+                            *tool_mode = ToolMode::Pan;
+                        }
+                        if tool_btn(
+                            ui,
+                            &LucideIcon::ScanSearch.unicode().to_string(),
+                            "Zoom Selection (Z)",
+                            *tool_mode == ToolMode::ZoomSelect,
+                        ) {
+                            *tool_mode = ToolMode::ZoomSelect;
+                        }
+                        if tool_btn(
+                            ui,
+                            &LucideIcon::Ruler.unicode().to_string(),
+                            "Measure (M)",
+                            *tool_mode == ToolMode::Ruler,
+                        ) {
+                            *tool_mode = ToolMode::Ruler;
+                        }
+
+                        // ── Separator ──
+                        ui.add(egui::Separator::default().horizontal().spacing(4.0));
 
                         // ── Zoom In ──
                         if tool_btn(
@@ -104,13 +134,10 @@ pub fn show_tool_panel(
                         ) {
                             output.fit_view_requested = true;
                         }
-                        // ── Zoom Selection & Ruler removed — now on mouse ──
-                        // Left-drag: zoom selection, Right-click: ruler
 
                         // ── Clear measurements ──
                         if !ruler_measurements.is_empty() {
-                            // ── Separator ──
-                            ui.add(egui::Separator::default().vertical().spacing(4.0));
+                            ui.add(egui::Separator::default().horizontal().spacing(4.0));
 
                             let btn = egui::Button::new(
                                 RichText::new(
@@ -121,10 +148,10 @@ pub fn show_tool_panel(
                             )
                             .fill(Color32::TRANSPARENT)
                             .rounding(Rounding::same(4.0))
-                            .min_size(Vec2::new(20.0, 28.0));
+                            .min_size(Vec2::new(28.0, 20.0));
                             if ui
                                 .add(btn)
-                                .on_hover_text("Clear measurements")
+                                .on_hover_text("Clear measurements (X)")
                                 .clicked()
                             {
                                 ruler_measurements.clear();
@@ -132,7 +159,7 @@ pub fn show_tool_panel(
                         }
 
                         // ── Separator ──
-                        ui.add(egui::Separator::default().vertical().spacing(4.0));
+                        ui.add(egui::Separator::default().horizontal().spacing(4.0));
 
                         // ── Grid ──
                         if tool_btn(
@@ -145,7 +172,7 @@ pub fn show_tool_panel(
                         }
 
                         // ── Separator ──
-                        ui.add(egui::Separator::default().vertical().spacing(4.0));
+                        ui.add(egui::Separator::default().horizontal().spacing(4.0));
 
                         // ── Snapshot ──
                         if tool_btn(

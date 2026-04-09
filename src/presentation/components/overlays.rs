@@ -9,21 +9,21 @@
 use egui::{Color32, Context, Rounding, Stroke};
 
 use crate::application::ports::{GlobalUnits, GridUnit, ParameterMode, ViewState};
-use crate::presentation::layout::{TOOLBAR_BOTTOM, TOOLBAR_HEIGHT};
 use crate::presentation::theme;
 
 use super::super::ui::{HoverInfo, RulerMeasurement};
 
 /// Render the scale bar overlay in the bottom-left corner.
-/// `left_offset` shifts the bar right (e.g., when gradient panel is visible).
-pub fn show_scale_bar(ctx: &Context, zoom: f32, grid_unit: GridUnit, left_offset: f32) {
+/// `left_offset` shifts the bar right (e.g., when sidebar is visible).
+/// `bottom_offset` shifts the bar up above the status bar / vector player.
+pub fn show_scale_bar(ctx: &Context, zoom: f32, grid_unit: GridUnit, left_offset: f32, bottom_offset: f32) {
     let screen = ctx.screen_rect();
     let painter = ctx.layer_painter(egui::LayerId::new(
-        egui::Order::Foreground,
+        egui::Order::Middle,
         egui::Id::new("scale_bar"),
     ));
     let bar_margin = 20.0;
-    let bar_y = screen.bottom() - bar_margin;
+    let bar_y = screen.bottom() - bottom_offset - bar_margin;
     let bar_x_start = left_offset + bar_margin + 10.0;
 
     if zoom <= 0.0 {
@@ -85,6 +85,8 @@ pub fn show_scale_bar(ctx: &Context, zoom: f32, grid_unit: GridUnit, left_offset
 }
 
 /// Render ruler measurement overlays (persistent + live preview).
+/// `sidebar_w` shifts screen positions right when the sidebar is visible.
+/// `content_top` is the Y offset for the top of the viewport (toolbar + tab bar).
 pub fn show_ruler_overlay(
     ctx: &Context,
     measurements: &[RulerMeasurement],
@@ -92,9 +94,11 @@ pub fn show_ruler_overlay(
     ruler_end: Option<crate::domain::value_objects::Point2D>,
     view_transform: Option<&(f32, f32, ViewState)>,
     grid_unit: GridUnit,
+    sidebar_w: f32,
+    content_top: f32,
 ) {
     let painter = ctx.layer_painter(egui::LayerId::new(
-        egui::Order::Foreground,
+        egui::Order::Middle,
         egui::Id::new("ruler_overlay"),
     ));
     let ruler_color = Color32::from_rgb(220, 50, 50);
@@ -112,7 +116,7 @@ pub fn show_ruler_overlay(
     if let Some(start) = ruler_start {
         if let Some((vw, vh, view)) = view_transform {
             let s_start = view.world_to_screen(start.x, start.y, *vw, *vh);
-            let p = egui::pos2(s_start.x, s_start.y + TOOLBAR_BOTTOM);
+            let p = egui::pos2(s_start.x + sidebar_w, s_start.y + content_top);
             painter.circle_filled(p, dot_radius, dot_color);
         }
     }
@@ -123,8 +127,8 @@ pub fn show_ruler_overlay(
             let s_start = view.world_to_screen(m.start.x, m.start.y, *vw, *vh);
             let s_end = view.world_to_screen(m.end.x, m.end.y, *vw, *vh);
             (
-                egui::pos2(s_start.x, s_start.y + TOOLBAR_BOTTOM),
-                egui::pos2(s_end.x, s_end.y + TOOLBAR_BOTTOM),
+                egui::pos2(s_start.x + sidebar_w, s_start.y + content_top),
+                egui::pos2(s_end.x + sidebar_w, s_end.y + content_top),
             )
         });
         if let Some((p1, p2)) = s {
@@ -158,8 +162,8 @@ pub fn show_ruler_overlay(
             if let Some((vw, vh, view)) = view_transform {
                 let s_start = view.world_to_screen(start.x, start.y, *vw, *vh);
                 let s_end = view.world_to_screen(end.x, end.y, *vw, *vh);
-                let p1 = egui::pos2(s_start.x, s_start.y + TOOLBAR_BOTTOM);
-                let p2 = egui::pos2(s_end.x, s_end.y + TOOLBAR_BOTTOM);
+                let p1 = egui::pos2(s_start.x + sidebar_w, s_start.y + content_top);
+                let p2 = egui::pos2(s_end.x + sidebar_w, s_end.y + content_top);
                 let preview_color = Color32::from_rgb(160, 160, 160);
                 painter.line_segment([p1, p2], Stroke::new(1.5, preview_color));
                 painter.circle_filled(
@@ -190,7 +194,7 @@ pub fn show_zoom_rect(
     end: crate::domain::value_objects::Point2D,
 ) {
     let painter = ctx.layer_painter(egui::LayerId::new(
-        egui::Order::Foreground,
+        egui::Order::Middle,
         egui::Id::new("zoom_rect"),
     ));
     let rect = egui::Rect::from_two_pos(egui::pos2(start.x, start.y), egui::pos2(end.x, end.y));
@@ -203,14 +207,18 @@ pub fn show_zoom_rect(
 }
 
 /// Render grid coordinate labels overlay along viewport edges.
+/// `sidebar_w` shifts labels right when the sidebar is visible.
+/// `content_top` is the Y offset for the top of the viewport (toolbar + tab bar).
 pub fn show_grid_labels(
     ctx: &Context,
     view_transform: &(f32, f32, ViewState),
     grid_unit: GridUnit,
+    sidebar_w: f32,
+    content_top: f32,
 ) {
     let (vw, vh, view) = view_transform;
     let painter = ctx.layer_painter(egui::LayerId::new(
-        egui::Order::Foreground,
+        egui::Order::Middle,
         egui::Id::new("grid_labels"),
     ));
     let (_, major_spacing) = crate::infrastructure::rendering::GridRenderer::spacing(view.zoom);
@@ -228,9 +236,9 @@ pub fn show_grid_labels(
     let mut x = x_start;
     while x <= vis_max.x {
         let screen_pt = view.world_to_screen(x, vis_min.y, *vw, *vh);
-        let sx = screen_pt.x;
-        let sy = *vh + TOOLBAR_HEIGHT - 2.0;
-        if sx > 50.0 && sx < *vw - 20.0 {
+        let sx = screen_pt.x + sidebar_w;
+        let sy = *vh + content_top - 2.0;
+        if sx > sidebar_w + 50.0 && sx < sidebar_w + *vw - 20.0 {
             let val = grid_unit.from_mm(x);
             let label = if val.abs() >= 1.0 {
                 format!("{:.0}", val)
@@ -261,9 +269,9 @@ pub fn show_grid_labels(
     let mut y = y_start;
     while y <= vis_max.y {
         let screen_pt = view.world_to_screen(vis_min.x, y, *vw, *vh);
-        let sx = 4.0;
-        let sy = screen_pt.y + TOOLBAR_HEIGHT;
-        if sy > TOOLBAR_HEIGHT + 20.0 && sy < TOOLBAR_HEIGHT + *vh - 20.0 {
+        let sx = sidebar_w + 4.0;
+        let sy = screen_pt.y + content_top;
+        if sy > content_top + 20.0 && sy < content_top + *vh - 20.0 {
             let val = grid_unit.from_mm(y);
             let label = if val.abs() >= 1.0 {
                 format!("{:.0}", val)

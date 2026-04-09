@@ -55,6 +55,8 @@ pub enum InputAction {
     ToggleZoomSelect,
     /// Toggle ruler (measure) tool
     ToggleRuler,
+    /// Set tool mode: Pan
+    ToolPan,
     /// Clear ruler measurements
     ClearMeasurements,
     /// Set parameter color mode: None
@@ -76,6 +78,8 @@ pub enum InputAction {
     PrevVector,
     /// Toggle vector playback (play/pause)
     ToggleVectorPlayback,
+    /// Toggle sidebar
+    ToggleSidebar,
     /// Quit application
     Quit,
 }
@@ -162,6 +166,10 @@ pub fn key_to_action(key: &str, ctrl: bool, shift: bool) -> Option<InputAction> 
         ("-", false, false) => Some(InputAction::ZoomOut),
         ("z", false, false) => Some(InputAction::ToggleZoomSelect),
 
+        // Tool modes
+        ("p", false, false) => Some(InputAction::ToolPan),
+        ("m", false, false) => Some(InputAction::ToggleRuler),
+
         // Vector view
         ("n", false, false) => Some(InputAction::ToggleVectorView),
         ("right", false, false) => Some(InputAction::NextVector),
@@ -169,8 +177,10 @@ pub fn key_to_action(key: &str, ctrl: bool, shift: bool) -> Option<InputAction> 
         ("space", false, false) => Some(InputAction::ToggleVectorPlayback),
 
         // Tools
-        ("m", false, false) => Some(InputAction::ToggleRuler),
         ("x", false, false) => Some(InputAction::ClearMeasurements),
+
+        // Sidebar
+        ("e", false, false) => Some(InputAction::ToggleSidebar),
 
         // Color modes
         ("1", false, false) => Some(InputAction::ParamModeNone),

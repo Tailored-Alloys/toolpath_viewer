@@ -1,12 +1,14 @@
 //! Toolbar Component
 //!
-//! Top toolbar with: load button, visibility toggles, parameter mode selector,
-//! file info / controls toggles, and right-aligned layer info.
+//! Top toolbar with grouped controls (CAD naming conventions):
+//! - Display: visibility toggles (Contours, Hatches, Arrows, Dwell, Animate)
+//! - Color By: Type, Power, Speed, Part
+//! - Right: Info, Shortcuts, Preferences
 
 use egui::{Color32, Context, RichText, Rounding, Stroke, Vec2};
 use lucide_icons::Icon as LucideIcon;
 
-use crate::application::ports::{GlobalUnits, GridUnit, ParameterMode, PowerUnit, TimeUnit};
+use crate::application::ports::{ColorMode, ParameterMode};
 use crate::presentation::layout::TOOLBAR_HEIGHT;
 use crate::presentation::theme::{self, toolbar_toggle, toolbar_toggle_image, toolbar_mode_btn};
 
@@ -29,12 +31,13 @@ pub fn show_toolbar(
     show_wait_markers: &mut bool,
     show_vector_view: &mut bool,
     param_mode: &mut Option<ParameterMode>,
+    color_mode: &mut ColorMode,
     show_file_info: &mut bool,
     show_controls: &mut bool,
     show_preferences: &mut bool,
-    global_units: &mut GlobalUnits,
+    has_multiple_files: bool,
 ) -> ToolbarOutput {
-    let mut output = ToolbarOutput::default();
+    let output = ToolbarOutput::default();
     let t = theme::active();
 
     egui::TopBottomPanel::top("toolbar")
@@ -47,31 +50,7 @@ pub fn show_toolbar(
         )
         .show(ctx, |ui| {
             ui.horizontal_centered(|ui| {
-                // ── Load File button ──
-                let icon_folder = LucideIcon::FolderOpen.unicode();
-                let load_label = if compact {
-                    format!("{}", icon_folder)
-                } else {
-                    format!("{} Load", icon_folder)
-                };
-                let load_btn =
-                    egui::Button::new(RichText::new(load_label).size(13.0).color(t.text_primary))
-                        .fill(Color32::TRANSPARENT)
-                        .rounding(Rounding::same(6.0))
-                        .min_size(Vec2::new(0.0, 30.0));
-                if ui
-                    .add(load_btn)
-                    .on_hover_text("Load file (Ctrl+O)")
-                    .clicked()
-                {
-                    output.open_file_requested = true;
-                }
-
-                ui.add_space(8.0);
-                ui.separator();
-                ui.add_space(8.0);
-
-                // ── Visibility toggles ──
+                // ── Group 1: Display ──
                 let icon_arrow = &LucideIcon::Navigation2.unicode().to_string();
                 toolbar_toggle_image(
                     ui,
@@ -89,32 +68,47 @@ pub fn show_toolbar(
                         bytes: egui::load::Bytes::Static(include_bytes!("../assets/icons/infill.svg")),
                     },
                     show_infills,
-                    "Toggle Infills (H)",
+                    "Toggle Hatches (H)",
                 );
-                toolbar_toggle(ui, icon_arrow, show_arrows, "Toggle Direction Arrows (A)");
+                toolbar_toggle(ui, icon_arrow, show_arrows, "Toggle Arrows (A)");
                 let icon_timer = &LucideIcon::Timer.unicode().to_string();
-                toolbar_toggle(ui, icon_timer, show_wait_markers, "Toggle Wait Markers (T)");
-                // Wait markers toggle — independent of parameter coloring
-                // Scale bar toggle removed — always visible
+                toolbar_toggle(ui, icon_timer, show_wait_markers, "Toggle Dwell (T)");
                 let icon_play = &LucideIcon::Play.unicode().to_string();
-                toolbar_toggle(ui, icon_play, show_vector_view, "Toggle Vector View (N)");
+                toolbar_toggle(ui, icon_play, show_vector_view, "Toggle Animate (N)");
 
                 ui.add_space(8.0);
                 ui.separator();
                 ui.add_space(8.0);
 
-                // ── Parameter mode selector ──
+                // ── Group 3: Color By ──
                 if !compact {
-                    ui.label(RichText::new("Parameters:").size(12.0).color(t.text_secondary));
+                    ui.label(RichText::new("Color:").size(12.0).color(t.text_secondary));
                 }
-                let modes = [
-                    (None, "None", "No parameter coloring (1)"),
+                let modes: Vec<(Option<ParameterMode>, &str, &str)> = vec![
+                    (None, "Type", "Color by vector type (1)"),
                     (Some(ParameterMode::Power), "Power", "Color by laser power (2)"),
                     (Some(ParameterMode::Speed), "Speed", "Color by scan speed (3)"),
                 ];
                 for (mode, label, tip) in &modes {
                     if toolbar_mode_btn(ui, label, *param_mode == *mode, tip) {
                         *param_mode = *mode;
+                        *color_mode = match *mode {
+                            None => ColorMode::ByVectorType,
+                            Some(pm) => ColorMode::ByParameter(pm),
+                        };
+                    }
+                }
+                // "By Part" color mode option (only when multiple files loaded)
+                if has_multiple_files {
+                    let is_by_file = matches!(color_mode, ColorMode::ByFile);
+                    if toolbar_mode_btn(ui, "Part", is_by_file, "Color by part") {
+                        if is_by_file {
+                            *color_mode = ColorMode::ByVectorType;
+                            *param_mode = None;
+                        } else {
+                            *color_mode = ColorMode::ByFile;
+                            *param_mode = None;
+                        }
                     }
                 }
 
@@ -122,76 +116,7 @@ pub fn show_toolbar(
                 ui.separator();
                 ui.add_space(8.0);
 
-                // ── Global Units selector (dropdowns) ──
-                if !compact {
-                    ui.label(RichText::new("Units:").size(12.0).color(t.text_secondary));
-                }
-
-                // Distance dropdown
-                let dist_label = format!("Distance: {}", global_units.length.label());
-                egui::ComboBox::from_id_source("unit_distance")
-                    .selected_text(RichText::new(global_units.length.label()).size(11.0))
-                    .width(44.0)
-                    .show_ui(ui, |ui| {
-                        ui.label(RichText::new("Distance").size(11.0).strong().color(t.text_primary));
-                        let length_opts: [(GridUnit, &str); 3] = [
-                            (GridUnit::Millimeters, "mm"),
-                            (GridUnit::Micrometers, "µm"),
-                            (GridUnit::Inches, "in"),
-                        ];
-                        for (unit, label) in length_opts {
-                            ui.selectable_value(&mut global_units.length, unit, label);
-                        }
-                    })
-                    .response
-                    .on_hover_text(dist_label);
-
-                ui.add_space(2.0);
-
-                // Time dropdown
-                let time_label = format!("Time: {}", global_units.time.label());
-                egui::ComboBox::from_id_source("unit_time")
-                    .selected_text(RichText::new(global_units.time.label()).size(11.0))
-                    .width(36.0)
-                    .show_ui(ui, |ui| {
-                        ui.label(RichText::new("Time").size(11.0).strong().color(t.text_primary));
-                        let time_opts: [(TimeUnit, &str); 3] = [
-                            (TimeUnit::Microseconds, "µs"),
-                            (TimeUnit::Milliseconds, "ms"),
-                            (TimeUnit::Seconds, "s"),
-                        ];
-                        for (unit, label) in time_opts {
-                            ui.selectable_value(&mut global_units.time, unit, label);
-                        }
-                    })
-                    .response
-                    .on_hover_text(time_label);
-
-                ui.add_space(2.0);
-
-                // Power dropdown
-                let power_label = format!("Power: {}", global_units.power.label());
-                egui::ComboBox::from_id_source("unit_power")
-                    .selected_text(RichText::new(global_units.power.label()).size(11.0))
-                    .width(36.0)
-                    .show_ui(ui, |ui| {
-                        ui.label(RichText::new("Power").size(11.0).strong().color(t.text_primary));
-                        let power_opts: [(PowerUnit, &str); 2] = [
-                            (PowerUnit::Watts, "W"),
-                            (PowerUnit::Kilowatts, "kW"),
-                        ];
-                        for (unit, label) in power_opts {
-                            ui.selectable_value(&mut global_units.power, unit, label);
-                        }
-                    })
-                    .response
-                    .on_hover_text(power_label);
-
-                ui.add_space(8.0);
-                ui.separator();
-                ui.add_space(8.0);
-
-                // ── File Info button ──
+                // ── Group 4: Right-aligned (Info, Shortcuts, Preferences, Explorer) ──
                 let icon_info = LucideIcon::FileText.unicode();
                 let info_label = if compact {
                     format!("{}", icon_info)
@@ -201,70 +126,39 @@ pub fn show_toolbar(
                 let info_btn = egui::Button::new(
                     RichText::new(info_label).size(13.0).color(t.text_primary),
                 )
-                .fill(if *show_file_info {
-                    t.toggle_active_bg
-                } else {
-                    Color32::TRANSPARENT
-                })
+                .fill(if *show_file_info { t.toggle_active_bg } else { Color32::TRANSPARENT })
                 .rounding(Rounding::same(6.0))
                 .min_size(Vec2::new(0.0, 30.0));
-                if ui
-                    .add(info_btn)
-                    .on_hover_text("Layer info & parameters (I)")
-                    .clicked()
-                {
+                if ui.add(info_btn).on_hover_text("Layer info & parameters (I)").clicked() {
                     *show_file_info = !*show_file_info;
                 }
 
-                // ── Controls button ──
                 let icon_kbd = LucideIcon::Keyboard.unicode();
                 let ctrl_label = if compact {
                     format!("{}", icon_kbd)
                 } else {
-                    format!("{} Controls", icon_kbd)
+                    format!("{} Shortcuts", icon_kbd)
                 };
                 let ctrl_btn = egui::Button::new(
                     RichText::new(ctrl_label).size(13.0).color(t.text_primary),
                 )
-                .fill(if *show_controls {
-                    t.toggle_active_bg
-                } else {
-                    Color32::TRANSPARENT
-                })
+                .fill(if *show_controls { t.toggle_active_bg } else { Color32::TRANSPARENT })
                 .rounding(Rounding::same(6.0))
                 .min_size(Vec2::new(0.0, 30.0));
-                if ui
-                    .add(ctrl_btn)
-                    .on_hover_text("Keyboard shortcuts (F1)")
-                    .clicked()
-                {
+                if ui.add(ctrl_btn).on_hover_text("Keyboard shortcuts (F1)").clicked() {
                     *show_controls = !*show_controls;
                 }
 
                 ui.add_space(4.0);
 
-                // ── Preferences button ──
                 let icon_settings = LucideIcon::Settings.unicode();
-                let pref_label = if compact {
-                    format!("{}", icon_settings)
-                } else {
-                    format!("{}", icon_settings)
-                };
                 let pref_btn = egui::Button::new(
-                    RichText::new(pref_label).size(13.0).color(t.text_primary),
+                    RichText::new(format!("{}", icon_settings)).size(13.0).color(t.text_primary),
                 )
-                .fill(if *show_preferences {
-                    t.toggle_active_bg
-                } else {
-                    Color32::TRANSPARENT
-                })
+                .fill(if *show_preferences { t.toggle_active_bg } else { Color32::TRANSPARENT })
                 .rounding(Rounding::same(6.0))
                 .min_size(Vec2::new(0.0, 30.0));
-                if ui
-                    .add(pref_btn)
-                    .on_hover_text("Preferences")
-                    .clicked()
-                {
+                if ui.add(pref_btn).on_hover_text("Preferences").clicked() {
                     *show_preferences = !*show_preferences;
                 }
             });

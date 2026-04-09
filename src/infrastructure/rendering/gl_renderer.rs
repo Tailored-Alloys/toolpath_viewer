@@ -238,6 +238,29 @@ impl GlRenderer {
         self.scale_factor = factor;
     }
 
+    /// Set a sub-viewport for split rendering.
+    /// Enables scissor test to clip to the given region.
+    /// `x`, `y` are bottom-left in physical pixels (GL convention).
+    pub fn set_sub_viewport(&mut self, x: i32, y: i32, width: u32, height: u32) {
+        unsafe {
+            gl::Viewport(x, y, width as i32, height as i32);
+            gl::Enable(gl::SCISSOR_TEST);
+            gl::Scissor(x, y, width as i32, height as i32);
+        }
+        self.width = width;
+        self.height = height;
+    }
+
+    /// Restore full viewport after split rendering.
+    pub fn restore_full_viewport(&mut self, full_width: u32, full_height: u32) {
+        unsafe {
+            gl::Disable(gl::SCISSOR_TEST);
+            gl::Viewport(0, 0, full_width as i32, full_height as i32);
+        }
+        self.width = full_width;
+        self.height = full_height;
+    }
+
     /// Render the background grid before layer content.
     pub fn render_grid(&mut self, view: &ViewState, minor_color: &Color, major_color: &Color) -> RenderResult<()> {
         let shader = self.shader.as_ref().ok_or_else(|| {
@@ -342,8 +365,10 @@ impl GlRenderer {
 
         for (vec_idx, vector) in layer.vectors.iter().enumerate() {
             let is_active = vec_idx < vector_limit;
-            // Determine color: parameter gradient when a mode is active, else type-based
-            let color = if let Some(param_mode) = options.param_mode {
+            // Determine color: file override > parameter gradient > type-based
+            let color = if let Some(ref file_color) = options.file_color_override {
+                *file_color
+            } else if let Some(param_mode) = options.param_mode {
                 let param_value = match param_mode {
                     ParameterMode::Power => vector.parameters.power,
                     ParameterMode::Speed => vector.parameters.speed,
