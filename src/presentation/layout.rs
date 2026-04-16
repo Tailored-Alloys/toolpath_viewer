@@ -58,8 +58,14 @@ pub const SCALE_BAR_MARGIN: f32 = 20.0;
 /// Width of the left activity bar (icon strip, always visible)
 pub const ACTIVITY_BAR_WIDTH: f32 = 44.0;
 
-/// Width of the left sidebar content panel when open
+/// Width of the left sidebar content panel when open (default)
 pub const SIDEBAR_WIDTH: f32 = 240.0;
+
+/// Minimum sidebar content panel width (for drag-to-resize)
+pub const SIDEBAR_MIN_WIDTH: f32 = 180.0;
+
+/// Maximum sidebar content panel width (for drag-to-resize)
+pub const SIDEBAR_MAX_WIDTH: f32 = 400.0;
 
 /// Height of the bottom status bar
 pub const STATUS_BAR_HEIGHT: f32 = 24.0;
@@ -83,7 +89,12 @@ pub const SIDEBAR_AUTO_COLLAPSE_WIDTH: f32 = 1000.0;
 pub const TAB_BAR_HEIGHT: f32 = 32.0;
 
 /// Horizontal gap (in logical pixels) between left and right split panes
-pub const SPLIT_GAP: f32 = 6.0;
+pub const SPLIT_GAP: f32 = 8.0;
+
+/// Sidebar content panel horizontal inner_margin (must match sidebar frame inner_margin horizontal).
+/// In egui 0.27, `exact_width(w)` sets the content min-width; the frame's inner_margin
+/// adds to the total panel width claimed. This constant accounts for that.
+pub const SIDEBAR_CONTENT_HPAD: f32 = 8.0;
 
 // ── Visibility flags ─────────────────────────────────────────────────────
 
@@ -110,6 +121,8 @@ pub struct VisibilityFlags {
     pub sidebar_open: bool,
     /// Whether the tab bar is visible (any open tabs)
     pub has_tab_bar: bool,
+    /// Dynamic sidebar content panel width (user-resizable, clamped to min/max)
+    pub sidebar_content_width: f32,
 }
 
 // ── Layout Regions ───────────────────────────────────────────────────────
@@ -266,16 +279,25 @@ impl LayoutRegions {
         let compact_toolbar = screen_w < COMPACT_TOOLBAR_THRESHOLD;
 
         // ── Toolbar ──
+        // Note: egui 0.27 exact_height(h) sets the content min-height; the frame's
+        // inner_margin (TOOLBAR_FRAME_VPAD top+bottom) adds to the actual panel height.
         let toolbar = Rect::from_min_size(
             screen.left_top(),
-            egui::vec2(screen_w, TOOLBAR_HEIGHT),
+            egui::vec2(screen_w, TOOLBAR_BOTTOM),
         );
 
         // ── Sidebar width (computed early so tab bar can start after it) ──
         let sidebar_auto_collapsed = screen_w < SIDEBAR_AUTO_COLLAPSE_WIDTH;
         let content_visible = flags.sidebar_open && !sidebar_auto_collapsed;
-        let content_width = if content_visible { SIDEBAR_WIDTH } else { 0.0 };
-        let sidebar_width = ACTIVITY_BAR_WIDTH + content_width;
+        let content_width = if content_visible {
+            flags.sidebar_content_width.clamp(SIDEBAR_MIN_WIDTH, SIDEBAR_MAX_WIDTH)
+        } else {
+            0.0
+        };
+        // In egui 0.27, exact_width(w) sets content min-width; the frame's inner_margin
+        // adds to the total panel width. Account for this when sidebar is visible.
+        let content_margin = if content_visible { 2.0 * SIDEBAR_CONTENT_HPAD } else { 0.0 };
+        let sidebar_width = ACTIVITY_BAR_WIDTH + content_width + content_margin;
 
         // ── Tab bar (secondary header, only spans the canvas area right of sidebar) ──
         let tab_bar = if flags.has_tab_bar {

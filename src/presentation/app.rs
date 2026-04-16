@@ -24,32 +24,10 @@ use crate::infrastructure::file_adapters::IltLoader;
 use crate::infrastructure::rendering::GlRenderer;
 use crate::presentation::{
     AppEvent, AppWindow, InputAction, MouseButton, ParamRanges, WindowConfig,
-    create_window, run_event_loop, UiRenderer, TOOLBAR_BOTTOM, ToolMode,
+    create_window, run_event_loop, UiRenderer, ToolMode,
     RulerMeasurement, SnapshotFormat, TabManager,
-    SIDEBAR_WIDTH, ACTIVITY_BAR_WIDTH, STATUS_BAR_HEIGHT, VECTOR_PLAYER_HEIGHT,
-    TAB_BAR_HEIGHT,
 };
 use crate::presentation::palette::{self, ResolvedMode, ThemePalette, resolve_mode, resolve_palette};
-
-/// Actual rendered height of the top toolbar in pixels (includes frame padding)
-const UI_TOOLBAR_HEIGHT: f32 = TOOLBAR_BOTTOM;
-
-/// Compute the total header height (toolbar + optional tab bar)
-fn header_height(has_tab_bar: bool) -> f32 {
-    UI_TOOLBAR_HEIGHT + if has_tab_bar { TAB_BAR_HEIGHT } else { 0.0 }
-}
-
-/// Compute sidebar-aware viewport parameters.
-/// Returns (sidebar_width, viewport_width, viewport_height).
-fn viewport_params(ui: &UiRenderer, logical_w: f32, logical_h: f32, has_tab_bar: bool) -> (f32, f32, f32) {
-    let sidebar_w = ACTIVITY_BAR_WIDTH + if ui.state.sidebar_open { SIDEBAR_WIDTH } else { 0.0 };
-    let bottom_h = STATUS_BAR_HEIGHT
-        + if ui.state.vector_view_enabled { VECTOR_PLAYER_HEIGHT } else { 0.0 };
-    let tab_bar_h = if has_tab_bar { TAB_BAR_HEIGHT } else { 0.0 };
-    let vp_w = (logical_w - sidebar_w).max(1.0);
-    let vp_h = (logical_h - UI_TOOLBAR_HEIGHT - tab_bar_h - bottom_h).max(1.0);
-    (sidebar_w, vp_w, vp_h)
-}
 
 /// State of background file loading
 enum LoadingState {
@@ -107,6 +85,7 @@ pub struct AppContext {
 pub struct App {
     config: WindowConfig,
     theme_config: crate::application::ports::ThemeConfig,
+    canvas_config: crate::application::ports::CanvasConfig,
 }
 
 impl App {
@@ -123,7 +102,7 @@ impl App {
             ..Default::default()
         };
 
-        Ok(Self { config, theme_config: app_config.theme })
+        Ok(Self { config, theme_config: app_config.theme, canvas_config: app_config.canvas })
     }
 
     /// Run the application
@@ -182,6 +161,24 @@ impl App {
             state.render.display_options.grid_major_color = palette.grid_major;
 
             ui.state.active_palette = palette;
+        }
+
+        // Apply saved canvas settings
+        {
+            let cc = &self.canvas_config;
+            ui.state.canvas_settings = cc.clone();
+            state.render.display_options.line_width = cc.line_width;
+            state.render.display_options.boundary_width_multiplier = cc.boundary_width_multiplier;
+            state.render.display_options.contour_width_multiplier = cc.contour_width_multiplier;
+            state.render.display_options.hatch_width_multiplier = cc.hatch_width_multiplier;
+            state.render.display_options.arrow_size_multiplier = cc.arrow_size_multiplier;
+            state.render.display_options.wait_marker_size_multiplier = cc.wait_marker_size_multiplier;
+            state.render.display_options.future_vector_alpha = cc.future_vector_alpha;
+            state.render.display_options.show_direction_gradient = cc.show_direction_gradient;
+            state.render.display_options.grid_line_width_minor = cc.grid_line_width_minor;
+            state.render.display_options.grid_line_width_major = cc.grid_line_width_major;
+            state.render.display_options.grid_opacity = cc.grid_opacity;
+            state.render.display_options.antialiasing = cc.antialiasing;
         }
 
         // Create file loader
@@ -366,8 +363,8 @@ fn start_background_load(
 fn finalize_load(
     loaded_files: Vec<(PathBuf, Toolpath, ParamRanges)>,
     state: &mut AppState,
-    viewport_width: f32,
-    viewport_height: f32,
+    vp_w: f32,
+    vp_h: f32,
 ) -> Result<ParamRanges> {
     let is_first_load = state.files.is_empty();
 
@@ -385,9 +382,8 @@ fn finalize_load(
             // Fit the new tab's view to the file's bounds
             if let Some((min, max)) = file.toolpath.slice_stack.bounds() {
                 let bounds = Bounds2D::new(min, max);
-                let render_height = (viewport_height - UI_TOOLBAR_HEIGHT - STATUS_BAR_HEIGHT).max(100.0);
                 if let Some(tab) = state.tab_manager.tab_mut(id) {
-                    tab.view_state.fit_to_bounds(&bounds, viewport_width, render_height);
+                    tab.view_state.fit_to_bounds(&bounds, vp_w, vp_h.max(100.0));
                 }
             }
         }
@@ -398,11 +394,10 @@ fn finalize_load(
     state.navigation.initialize_from_z_heights(z_heights);
 
     // Fit view if first load (use effective viewport area)
-    let render_height = (viewport_height - UI_TOOLBAR_HEIGHT - STATUS_BAR_HEIGHT).max(100.0);
     if is_first_load {
         if let Some((min, max)) = state.files.merged_bounds() {
             let bounds = Bounds2D::new(min, max);
-            state.render.view_state.fit_to_bounds(&bounds, viewport_width, render_height);
+            state.render.view_state.fit_to_bounds(&bounds, vp_w, vp_h.max(100.0));
         }
     }
 
@@ -431,8 +426,8 @@ fn poll_loading_state(
         }
         LoadingState::Complete(loaded_files) => {
             // Loading done
-            let (w, h) = window.logical_size();
-            match finalize_load(loaded_files, state, w, h) {
+            let vp = ui.state.cached_viewport_rect;
+            match finalize_load(loaded_files, state, vp.width(), vp.height()) {
                 Ok(ranges) => {
                     ui.state.param_ranges = ranges.clone();
                     if let Some((wmin, wmax)) = ranges.wait_time {
@@ -529,14 +524,13 @@ fn handle_event(
             // Handle panning only when pointer is in viewport
             if pointer_in_viewport {
                 let mouse = &window.input_state.mouse_pos;
-                let (logical_w, logical_h) = window.logical_size();
-                let has_tab_bar = state.tab_manager.has_tabs();
-                let (sidebar_w, vp_w, vp_h) = viewport_params(&ui, logical_w, logical_h, has_tab_bar);
-                let hdr_h = header_height(has_tab_bar);
+                let vp = ui.state.cached_viewport_rect;
+                let vp_w = vp.width();
+                let vp_h = vp.height();
 
                 // Track world position for status bar
-                let viewport_mouse_x = mouse.x - sidebar_w;
-                let viewport_mouse_y = mouse.y - hdr_h;
+                let viewport_mouse_x = mouse.x - vp.left();
+                let viewport_mouse_y = mouse.y - vp.top();
                 let world_pos = state.render.view_state.screen_to_world(
                     viewport_mouse_x, viewport_mouse_y, vp_w, vp_h,
                 );
@@ -594,10 +588,9 @@ fn handle_event(
         AppEvent::MouseButton { button, pressed } => {
             if pointer_in_viewport {
                 let mouse = &window.input_state.mouse_pos;
-                let (logical_w, logical_h) = window.logical_size();
-                let has_tab_bar = state.tab_manager.has_tabs();
-                let (sidebar_w, vp_w, vp_h) = viewport_params(&ui, logical_w, logical_h, has_tab_bar);
-                let hdr_h = header_height(has_tab_bar);
+                let vp = ui.state.cached_viewport_rect;
+                let vp_w = vp.width();
+                let vp_h = vp.height();
 
                 match button {
                     // Left button: behavior depends on active tool mode
@@ -612,8 +605,8 @@ fn handle_event(
                             }
                             ToolMode::Ruler => {
                                 // Ruler click: place or complete measurement
-                                let viewport_mouse_x = mouse.x - sidebar_w;
-                                let viewport_mouse_y = mouse.y - hdr_h;
+                                let viewport_mouse_x = mouse.x - vp.left();
+                                let viewport_mouse_y = mouse.y - vp.top();
                                 let world = state.render.view_state.screen_to_world(
                                     viewport_mouse_x, viewport_mouse_y, vp_w, vp_h,
                                 );
@@ -634,10 +627,10 @@ fn handle_event(
                                     let dy = (end.y - start.y).abs();
                                     if dx > 5.0 && dy > 5.0 {
                                         let w1 = state.render.view_state.screen_to_world(
-                                            start.x - sidebar_w, start.y - hdr_h, vp_w, vp_h,
+                                            start.x - vp.left(), start.y - vp.top(), vp_w, vp_h,
                                         );
                                         let w2 = state.render.view_state.screen_to_world(
-                                            end.x - sidebar_w, end.y - hdr_h, vp_w, vp_h,
+                                            end.x - vp.left(), end.y - vp.top(), vp_w, vp_h,
                                         );
 
                                         let bounds = Bounds2D::new(
@@ -655,8 +648,8 @@ fn handle_event(
                     }
                     // Right button click: always ruler (add/remove measurement point)
                     MouseButton::Right if pressed => {
-                        let viewport_mouse_x = mouse.x - sidebar_w;
-                        let viewport_mouse_y = mouse.y - hdr_h;
+                        let viewport_mouse_x = mouse.x - vp.left();
+                        let viewport_mouse_y = mouse.y - vp.top();
                         let world = state.render.view_state.screen_to_world(
                             viewport_mouse_x, viewport_mouse_y, vp_w, vp_h,
                         );
@@ -672,15 +665,14 @@ fn handle_event(
         AppEvent::Scroll { delta } => {
             // Handle zoom only when pointer is in viewport
             if pointer_in_viewport {
-                let (logical_w, logical_h) = window.logical_size();
-                let has_tab_bar = state.tab_manager.has_tabs();
-                let (sidebar_w, vp_w, vp_h) = viewport_params(&ui, logical_w, logical_h, has_tab_bar);
-                let hdr_h = header_height(has_tab_bar);
+                let vp = ui.state.cached_viewport_rect;
+                let vp_w = vp.width();
+                let vp_h = vp.height();
                 let zoom_factor = if delta > 0.0 { 1.1 } else { 0.9 };
                 let mouse = &window.input_state.mouse_pos;
                 
-                let viewport_mouse_x = mouse.x - sidebar_w;
-                let viewport_mouse_y = mouse.y - hdr_h;
+                let viewport_mouse_x = mouse.x - vp.left();
+                let viewport_mouse_y = mouse.y - vp.top();
                 
                 state.render.zoom(
                     zoom_factor,
@@ -798,10 +790,9 @@ fn handle_key_action(
 
         InputAction::ResetView => {
             if let Some((min, max)) = state.files.merged_bounds() {
-                let (logical_w, logical_h) = window.logical_size();
-                let (_sw, vp_w, vp_h) = viewport_params(ui, logical_w, logical_h, state.tab_manager.has_tabs());
+                let vp = ui.state.cached_viewport_rect;
                 let bounds = Bounds2D::new(min, max);
-                state.render.view_state.fit_to_bounds(&bounds, vp_w, vp_h);
+                state.render.view_state.fit_to_bounds(&bounds, vp.width(), vp.height());
                 state.needs_redraw = true;
                 window.request_redraw();
             }
@@ -859,17 +850,15 @@ fn handle_key_action(
         }
 
         InputAction::ZoomIn => {
-            let (logical_w, logical_h) = window.logical_size();
-            let (_sw, vp_w, vp_h) = viewport_params(ui, logical_w, logical_h, state.tab_manager.has_tabs());
-            state.render.zoom(1.2, vp_w / 2.0, vp_h / 2.0, vp_w, vp_h);
+            let vp = ui.state.cached_viewport_rect;
+            state.render.zoom(1.2, vp.width() / 2.0, vp.height() / 2.0, vp.width(), vp.height());
             state.needs_redraw = true;
             window.request_redraw();
         }
 
         InputAction::ZoomOut => {
-            let (logical_w, logical_h) = window.logical_size();
-            let (_sw, vp_w, vp_h) = viewport_params(ui, logical_w, logical_h, state.tab_manager.has_tabs());
-            state.render.zoom(0.8, vp_w / 2.0, vp_h / 2.0, vp_w, vp_h);
+            let vp = ui.state.cached_viewport_rect;
+            state.render.zoom(0.8, vp.width() / 2.0, vp.height() / 2.0, vp.width(), vp.height());
             state.needs_redraw = true;
             window.request_redraw();
         }
@@ -991,6 +980,169 @@ fn handle_key_action(
             window.request_redraw();
         }
 
+        InputAction::NextTab => {
+            let ids = &state.tab_manager.open_tab_ids;
+            if ids.len() > 1 {
+                if let Some(active) = state.tab_manager.active_tab_id {
+                    let idx = ids.iter().position(|&id| id == active).unwrap_or(0);
+                    let next = ids[(idx + 1) % ids.len()];
+                    state.tab_manager.set_active(next);
+                    ui.state.active_tab_file = Some(next);
+                    state.needs_redraw = true;
+                    window.request_redraw();
+                }
+            }
+        }
+
+        InputAction::PrevTab => {
+            let ids = &state.tab_manager.open_tab_ids;
+            if ids.len() > 1 {
+                if let Some(active) = state.tab_manager.active_tab_id {
+                    let idx = ids.iter().position(|&id| id == active).unwrap_or(0);
+                    let prev = ids[(idx + ids.len() - 1) % ids.len()];
+                    state.tab_manager.set_active(prev);
+                    ui.state.active_tab_file = Some(prev);
+                    state.needs_redraw = true;
+                    window.request_redraw();
+                }
+            }
+        }
+
+        InputAction::CloseTab => {
+            if let Some(close_id) = state.tab_manager.active_tab_id {
+                state.files.toggle_visibility_off(close_id);
+                state.tab_manager.close_tab(close_id);
+                ui.state.active_tab_file = state.tab_manager.active_tab_id;
+                ui.state.has_multiple_files = state.tab_manager.tab_count() > 1;
+                let z_heights = state.files.merged_z_heights();
+                state.navigation.initialize_from_z_heights(z_heights);
+                ui.state.param_ranges = state.files.merged_param_ranges();
+                state.needs_redraw = true;
+                window.request_redraw();
+            }
+        }
+
+        InputAction::FirstVector => {
+            if ui.state.vector_view_enabled && ui.state.total_vectors_in_layer > 0 {
+                ui.state.current_vector_index = 0;
+                ui.state.vector_view_playing = false;
+                ui.state.playback_time_accumulator = 0.0;
+                state.needs_redraw = true;
+                window.request_redraw();
+            }
+        }
+
+        InputAction::LastVector => {
+            if ui.state.vector_view_enabled && ui.state.total_vectors_in_layer > 0 {
+                ui.state.current_vector_index = ui.state.total_vectors_in_layer.saturating_sub(1);
+                ui.state.vector_view_playing = false;
+                ui.state.playback_time_accumulator = 0.0;
+                state.needs_redraw = true;
+                window.request_redraw();
+            }
+        }
+
+        InputAction::PlaybackSpeedUp => {
+            let speed_opts: [f32; 4] = [0.5, 1.0, 2.0, 5.0];
+            let idx = speed_opts.iter()
+                .position(|&s| (s - ui.state.playback_speed).abs() < 0.01)
+                .unwrap_or(1);
+            if idx + 1 < speed_opts.len() {
+                ui.state.playback_speed = speed_opts[idx + 1];
+            }
+            window.request_redraw();
+        }
+
+        InputAction::PlaybackSpeedDown => {
+            let speed_opts: [f32; 4] = [0.5, 1.0, 2.0, 5.0];
+            let idx = speed_opts.iter()
+                .position(|&s| (s - ui.state.playback_speed).abs() < 0.01)
+                .unwrap_or(1);
+            if idx > 0 {
+                ui.state.playback_speed = speed_opts[idx - 1];
+            }
+            window.request_redraw();
+        }
+
+        InputAction::UndoMeasurement => {
+            if ui.state.tool_state.active_mode == ToolMode::Ruler {
+                ui.state.tool_state.ruler_measurements.pop();
+                window.request_redraw();
+            }
+        }
+
+        InputAction::FocusLayerInput => {
+            ui.state.focus_layer_input = true;
+            window.request_redraw();
+        }
+
+        InputAction::CycleViewMode => {
+            if ui.state.has_multiple_files {
+                ui.state.view_mode = match ui.state.view_mode {
+                    ViewMode::Overlay => ViewMode::Tab,
+                    ViewMode::Tab => ViewMode::Split,
+                    ViewMode::Split => ViewMode::Overlay,
+                };
+                state.needs_redraw = true;
+                window.request_redraw();
+            }
+        }
+
+        InputAction::ToggleSplit => {
+            if ui.state.has_multiple_files {
+                if ui.state.view_mode == ViewMode::Split {
+                    ui.state.view_mode = ViewMode::Tab;
+                } else {
+                    ui.state.view_mode = ViewMode::Split;
+                    ui.state.split_ratio = 0.5;
+                }
+                state.needs_redraw = true;
+                window.request_redraw();
+            }
+        }
+
+        InputAction::JumpToTab(index) => {
+            let ids = &state.tab_manager.open_tab_ids;
+            if index < ids.len() {
+                let target = ids[index];
+                state.tab_manager.set_active(target);
+                ui.state.active_tab_file = Some(target);
+                state.needs_redraw = true;
+                window.request_redraw();
+            }
+        }
+
+        InputAction::FocusLeftPane => {
+            if ui.state.view_mode == ViewMode::Split {
+                // Focus left pane = make active tab the focused one (already is by default)
+                // Clear right-pane focus indicator
+                state.needs_redraw = true;
+                window.request_redraw();
+            }
+        }
+
+        InputAction::FocusRightPane => {
+            if ui.state.view_mode == ViewMode::Split {
+                // Focus right pane
+                state.needs_redraw = true;
+                window.request_redraw();
+            }
+        }
+
+        InputAction::ParamModeFile => {
+            if ui.state.has_multiple_files {
+                ui.state.param_mode = None;
+                ui.state.color_mode = ColorMode::ByFile;
+                state.needs_redraw = true;
+                window.request_redraw();
+            }
+        }
+
+        InputAction::TogglePreferences => {
+            ui.state.show_preferences = !ui.state.show_preferences;
+            window.request_redraw();
+        }
+
         InputAction::Quit => {
             // Handled in main event handler
         }
@@ -1071,12 +1223,9 @@ fn render_frame(
     let loading_active = poll_loading_state(state, ui, window);
 
     // Update view transform for UI overlays (ruler, grid labels, scale bar)
-    // All viewport calculations use logical pixels for consistency
-    let (logical_w, logical_h) = window.logical_size();
-    let has_tab_bar = state.tab_manager.has_tabs();
-    let hdr_h = header_height(has_tab_bar);
-    let (sidebar_w, vp_w, vp_h) = viewport_params(ui, logical_w, logical_h, has_tab_bar);
-    ui.update_view_transform(&state.render.view_state, vp_w, vp_h);
+    // Use cached viewport rect from last frame for pre-UI calculations
+    let cached_vp = ui.state.cached_viewport_rect;
+    ui.update_view_transform(&state.render.view_state, cached_vp.width(), cached_vp.height());
 
     // ── Sync active tab's ViewState ↔ global render view state ──
     // Before rendering: copy active tab's camera into state.render.view_state
@@ -1085,15 +1234,19 @@ fn render_frame(
         state.render.view_state = tab.view_state.clone();
     }
 
-    // Update GL projection center for sidebar + bottom panels
-    let bottom_h = STATUS_BAR_HEIGHT
-        + if ui.state.vector_view_enabled { VECTOR_PLAYER_HEIGHT } else { 0.0 };
-    let tab_bar_h = if has_tab_bar { TAB_BAR_HEIGHT } else { 0.0 };
-    renderer.set_view_offset_x(-sidebar_w / 2.0);
-    renderer.set_view_offset_y(((UI_TOOLBAR_HEIGHT + tab_bar_h) - bottom_h) / 2.0);
-
     // 1. Run egui logic to get current toggle/slider values (no painting yet)
     let ui_output = ui.run_ui(&window.window, &state.files, &mut state.tab_manager);
+
+    // Cache the authoritative viewport rect from LayoutRegions for use by event handlers
+    ui.state.cached_viewport_rect = ui_output.viewport_rect;
+
+    // Extract viewport parameters from the single source of truth (LayoutRegions)
+    let vp = ui_output.viewport_rect;
+    let vp_w = vp.width();
+    let vp_h = vp.height();
+    let sidebar_w = ui_output.sidebar_total_width;
+    let bottom_h = ui_output.bottom_bar_height;
+    let hdr_h = ui_output.header_height;
 
     // Handle file open request from Load button or file panel Add button
     if ui_output.open_file_requested || ui_output.add_files_requested {
@@ -1127,6 +1280,81 @@ fn render_frame(
         state.tab_manager.split_partner_id = Some(partner_id);
         ui.state.view_mode = ViewMode::Split;
         ui.state.split_ratio = 0.5;
+        state.needs_redraw = true;
+    }
+
+    // ── Overlay mode actions ──
+    if let Some(toggle_id) = ui_output.overlay_toggle {
+        state.tab_manager.toggle_overlay_visible(toggle_id);
+        state.needs_redraw = true;
+    }
+    if ui_output.overlay_select_all {
+        state.tab_manager.overlay_select_all();
+        state.needs_redraw = true;
+    }
+    if let Some(only_id) = ui_output.overlay_select_only {
+        state.tab_manager.overlay_select_none();
+        state.tab_manager.overlay_visible_ids.insert(only_id);
+        state.tab_manager.set_active(only_id);
+        ui.state.active_tab_file = Some(only_id);
+        state.needs_redraw = true;
+    }
+
+    // ── Context menu: close others / close all / show in split ──
+    if let Some(keep_id) = ui_output.close_others {
+        let ids_to_close: Vec<usize> = state.tab_manager.open_tab_ids.iter()
+            .filter(|&&id| id != keep_id)
+            .copied()
+            .collect();
+        for id in ids_to_close {
+            state.files.toggle_visibility_off(id);
+            state.tab_manager.close_tab(id);
+        }
+        state.tab_manager.set_active(keep_id);
+        ui.state.active_tab_file = Some(keep_id);
+        ui.state.has_multiple_files = state.tab_manager.tab_count() > 1;
+        let z_heights = state.files.merged_z_heights();
+        state.navigation.initialize_from_z_heights(z_heights);
+        ui.state.param_ranges = state.files.merged_param_ranges();
+        state.needs_redraw = true;
+    }
+    if ui_output.close_all {
+        let ids_to_close: Vec<usize> = state.tab_manager.open_tab_ids.clone();
+        for id in ids_to_close {
+            state.files.toggle_visibility_off(id);
+            state.tab_manager.close_tab(id);
+        }
+        ui.state.active_tab_file = None;
+        ui.state.has_multiple_files = false;
+        let z_heights = state.files.merged_z_heights();
+        state.navigation.initialize_from_z_heights(z_heights);
+        ui.state.param_ranges = state.files.merged_param_ranges();
+        state.needs_redraw = true;
+    }
+    if let Some(split_id) = ui_output.show_in_split {
+        state.tab_manager.split_partner_id = Some(split_id);
+        state.tab_manager.split_right_active_id = Some(split_id);
+        ui.state.view_mode = ViewMode::Split;
+        ui.state.split_ratio = 0.5;
+        state.needs_redraw = true;
+    }
+
+    // ── Split mode: right pane tab switch ──
+    if let Some(right_id) = ui_output.split_right_switch {
+        state.tab_manager.split_right_active_id = Some(right_id);
+        state.tab_manager.split_partner_id = Some(right_id);
+        state.needs_redraw = true;
+    }
+
+    // ── Tab reorder ──
+    if let Some((from, to)) = ui_output.reorder_tab {
+        state.tab_manager.reorder_tab(from, to);
+        state.needs_redraw = true;
+    }
+
+    // ── Split sync toggle ──
+    if ui_output.split_sync_toggled {
+        state.tab_manager.toggle_split_sync();
         state.needs_redraw = true;
     }
 
@@ -1282,7 +1510,8 @@ fn render_frame(
         || state.render.display_options.wait_time_min != ui_output.wait_filter_min
         || state.render.display_options.wait_time_max != ui_output.wait_filter_max
         || state.render.display_options.show_grid != ui_output.tool_state.show_grid
-        || vector_view_changed;
+        || vector_view_changed
+        || ui_output.canvas_changed;
 
     // Handle theme/palette changes from preferences dialog
     if ui_output.theme_changed {
@@ -1299,6 +1528,30 @@ fn render_frame(
             cfg.theme.mode = ui.state.theme_mode;
             cfg.theme.light_palette = ui.state.light_palette_id;
             cfg.theme.dark_palette = ui.state.dark_palette_id;
+            let _ = cm.save(&cfg);
+        }
+    }
+
+    // Handle canvas settings changes from preferences dialog
+    if ui_output.canvas_changed {
+        let cc = &ui.state.canvas_settings;
+        state.render.display_options.line_width = cc.line_width;
+        state.render.display_options.boundary_width_multiplier = cc.boundary_width_multiplier;
+        state.render.display_options.contour_width_multiplier = cc.contour_width_multiplier;
+        state.render.display_options.hatch_width_multiplier = cc.hatch_width_multiplier;
+        state.render.display_options.arrow_size_multiplier = cc.arrow_size_multiplier;
+        state.render.display_options.wait_marker_size_multiplier = cc.wait_marker_size_multiplier;
+        state.render.display_options.future_vector_alpha = cc.future_vector_alpha;
+        state.render.display_options.show_direction_gradient = cc.show_direction_gradient;
+        state.render.display_options.grid_line_width_minor = cc.grid_line_width_minor;
+        state.render.display_options.grid_line_width_major = cc.grid_line_width_major;
+        state.render.display_options.grid_opacity = cc.grid_opacity;
+        state.render.display_options.antialiasing = cc.antialiasing;
+
+        // Persist canvas preferences
+        let cm = JsonConfigManager::new();
+        if let Ok(mut cfg) = cm.load() {
+            cfg.canvas = ui.state.canvas_settings.clone();
             let _ = cm.save(&cfg);
         }
     }
@@ -1321,6 +1574,10 @@ fn render_frame(
         None
     };
 
+    // Update GL projection center offsets from authoritative viewport rect
+    renderer.set_view_offset_x(-sidebar_w / 2.0);
+    renderer.set_view_offset_y((hdr_h - bottom_h) / 2.0);
+
     // 2. Restore GL state first (egui leaves scissor test enabled), then clear
     renderer.begin_frame()?;
 
@@ -1342,9 +1599,9 @@ fn render_frame(
 
     match view_mode {
         ViewMode::Overlay => {
-            // Clip GL rendering to the canvas area (excludes sidebar, toolbar, status bar)
+            // Clip GL rendering to the canvas area (excludes sidebar, toolbar, status bar, layer slider)
             let scale = window.scale_factor;
-            let phys_x = (sidebar_w * scale) as i32;
+            let phys_x = (vp.left() * scale) as i32;
             let phys_y = (bottom_h * scale) as i32; // GL Y=0 is bottom
             let phys_w = (vp_w * scale) as u32;
             let phys_h = (vp_h * scale) as u32;
@@ -1356,13 +1613,17 @@ fn render_frame(
             if state.render.display_options.show_grid {
                 renderer.render_grid(
                     &state.render.view_state,
-                    &state.render.display_options.grid_minor_color,
-                    &state.render.display_options.grid_major_color,
+                    &state.render.display_options,
                 )?;
             }
 
-            // Overlay mode: render all visible files on the same viewport
+            // Overlay mode: render only files selected in overlay visibility
+            let overlay_ids = &state.tab_manager.overlay_visible_ids;
             for file in state.files.visible_files() {
+                // Skip files not selected in overlay mode (if any selections exist)
+                if !overlay_ids.is_empty() && !overlay_ids.contains(&file.id) {
+                    continue;
+                }
                 if let Some(layer) = file.toolpath.slice_stack.get_layer_by_z(current_z) {
                     accumulate_vector_counts(layer, &mut total_counts);
 
@@ -1388,13 +1649,13 @@ fn render_frame(
             // Restore full viewport and view offsets
             renderer.restore_full_viewport(full_phys_w, full_phys_h);
             renderer.set_view_offset_x(-sidebar_w / 2.0);
-            renderer.set_view_offset_y(((UI_TOOLBAR_HEIGHT + tab_bar_h) - bottom_h) / 2.0);
+            renderer.set_view_offset_y((hdr_h - bottom_h) / 2.0);
         }
 
         ViewMode::Tab => {
-            // Clip GL rendering to the canvas area (excludes sidebar, toolbar, status bar)
+            // Clip GL rendering to the canvas area (excludes sidebar, toolbar, status bar, layer slider)
             let scale = window.scale_factor;
-            let phys_x = (sidebar_w * scale) as i32;
+            let phys_x = (vp.left() * scale) as i32;
             let phys_y = (bottom_h * scale) as i32;
             let phys_w = (vp_w * scale) as u32;
             let phys_h = (vp_h * scale) as u32;
@@ -1406,8 +1667,7 @@ fn render_frame(
             if state.render.display_options.show_grid {
                 renderer.render_grid(
                     &state.render.view_state,
-                    &state.render.display_options.grid_minor_color,
-                    &state.render.display_options.grid_major_color,
+                    &state.render.display_options,
                 )?;
             }
 
@@ -1443,42 +1703,52 @@ fn render_frame(
             // Restore full viewport and view offsets
             renderer.restore_full_viewport(full_phys_w, full_phys_h);
             renderer.set_view_offset_x(-sidebar_w / 2.0);
-            renderer.set_view_offset_y(((UI_TOOLBAR_HEIGHT + tab_bar_h) - bottom_h) / 2.0);
+            renderer.set_view_offset_y((hdr_h - bottom_h) / 2.0);
         }
 
         ViewMode::Split => {
             // Split mode: render active tab + split partner side-by-side.
-            // Both panes share the SAME camera (ViewState) — pan/zoom/layer
-            // are synchronized. Only the file content differs per pane.
+            // Cameras can be synced (shared) or independent per pane.
             let scale = window.scale_factor;
-            let sidebar_phys_w = (sidebar_w * scale) as u32;
-            let hdr_phys = (hdr_h * scale) as u32;
-            let bottom_phys = (bottom_h * scale) as u32;
-            let canvas_phys_h = full_phys_h.saturating_sub(hdr_phys).saturating_sub(bottom_phys);
-            let canvas_phys_w = full_phys_w.saturating_sub(sidebar_phys_w);
+            let vp_phys_x = (vp.left() * scale) as u32;
+            let vp_phys_w = (vp_w * scale) as u32;
+            let vp_phys_h = (vp_h * scale) as u32;
             let split_ratio = ui_output.split_ratio;
-            // Reserve a physical-pixel gap between the two panes
             let gap_phys = (super::layout::SPLIT_GAP * scale) as u32;
-            let usable_w = canvas_phys_w.saturating_sub(gap_phys);
+            let usable_w = vp_phys_w.saturating_sub(gap_phys);
             let left_phys_w = (usable_w as f32 * split_ratio) as u32;
             let right_phys_w = usable_w.saturating_sub(left_phys_w);
 
-            // GL Y=0 is at the window bottom, so the canvas bottom starts
-            // above the status bar / vector player.
-            let canvas_y = bottom_phys as i32;
+            let canvas_y = (bottom_h * scale) as i32;
 
-            // Zero out view offsets — sub-viewports are already cropped to
-            // each pane's exact rectangle, so no projection shifting needed.
             renderer.set_view_offset_x(0.0);
             renderer.set_view_offset_y(0.0);
 
-            // Shared camera for both panes
-            let shared_view = state.render.view_state.clone();
+            // Left pane always uses active tab's camera
+            let left_view = state.render.view_state.clone();
 
-            // Determine left (active) and right (partner) file IDs
+            // Right pane: independent camera when unsynced, shared when synced
+            let right_view = if state.tab_manager.split_cameras_synced {
+                left_view.clone()
+            } else {
+                state.tab_manager.split_right_view_state.clone()
+                    .unwrap_or_else(|| left_view.clone())
+            };
+
+            // Right pane Z: independent layer when unsynced
+            let right_z = if state.tab_manager.split_cameras_synced {
+                current_z
+            } else {
+                state.tab_manager.split_right_navigation.as_ref()
+                    .map(|nav| nav.state().current_z)
+                    .unwrap_or(current_z)
+            };
+
+            // Determine left and right file IDs
             let left_id = state.tab_manager.active_tab_id
                 .or_else(|| state.files.files.first().map(|f| f.id));
-            let right_id = state.tab_manager.split_partner_id
+            let right_id = state.tab_manager.split_right_active_id
+                .or(state.tab_manager.split_partner_id)
                 .or_else(|| {
                     state.tab_manager.open_tab_ids.iter()
                         .find(|&&id| Some(id) != left_id)
@@ -1486,23 +1756,18 @@ fn render_frame(
                 })
                 .or_else(|| state.files.files.iter().find(|f| Some(f.id) != left_id).map(|f| f.id));
 
-            // Render left half — active tab
+            // Render left half
             if let Some(lid) = left_id {
-                renderer.set_sub_viewport(sidebar_phys_w as i32, canvas_y, left_phys_w, canvas_phys_h);
-                renderer.clear(&bg_color)?;  // Clear within scissor rect
+                renderer.set_sub_viewport(vp_phys_x as i32, canvas_y, left_phys_w, vp_phys_h);
+                renderer.clear(&bg_color)?;
 
                 if state.render.display_options.show_grid {
-                    renderer.render_grid(
-                        &shared_view,
-                        &state.render.display_options.grid_minor_color,
-                        &state.render.display_options.grid_major_color,
-                    )?;
+                    renderer.render_grid(&left_view, &state.render.display_options)?;
                 }
 
                 if let Some(file) = state.files.files.iter().find(|f| f.id == lid) {
                     if let Some(layer) = file.toolpath.slice_stack.get_layer_by_z(current_z) {
                         accumulate_vector_counts(layer, &mut total_counts);
-
                         state.render.display_options.file_color_override = match color_mode {
                             ColorMode::ByFile => Some(file.color),
                             _ => None,
@@ -1511,39 +1776,27 @@ fn render_frame(
                             ColorMode::ByParameter(pm) => Some(pm),
                             _ => None,
                         };
-
-                        renderer.render_layer(
-                            layer,
-                            &shared_view,
-                            &state.render.display_options,
-                        )?;
+                        renderer.render_layer(layer, &left_view, &state.render.display_options)?;
                         any_layer_rendered = true;
                     }
                 }
             }
 
-            // Render right half — split partner (offset past the gap)
+            // Render right half
             if let Some(rid) = right_id {
                 renderer.set_sub_viewport(
-                    (sidebar_phys_w + left_phys_w + gap_phys) as i32,
-                    canvas_y,
-                    right_phys_w,
-                    canvas_phys_h,
+                    (vp_phys_x + left_phys_w + gap_phys) as i32,
+                    canvas_y, right_phys_w, vp_phys_h,
                 );
-                renderer.clear(&bg_color)?;  // Clear within scissor rect
+                renderer.clear(&bg_color)?;
 
                 if state.render.display_options.show_grid {
-                    renderer.render_grid(
-                        &shared_view,
-                        &state.render.display_options.grid_minor_color,
-                        &state.render.display_options.grid_major_color,
-                    )?;
+                    renderer.render_grid(&right_view, &state.render.display_options)?;
                 }
 
                 if let Some(file) = state.files.files.iter().find(|f| f.id == rid) {
-                    if let Some(layer) = file.toolpath.slice_stack.get_layer_by_z(current_z) {
+                    if let Some(layer) = file.toolpath.slice_stack.get_layer_by_z(right_z) {
                         accumulate_vector_counts(layer, &mut total_counts);
-
                         state.render.display_options.file_color_override = match color_mode {
                             ColorMode::ByFile => Some(file.color),
                             _ => None,
@@ -1552,12 +1805,7 @@ fn render_frame(
                             ColorMode::ByParameter(pm) => Some(pm),
                             _ => None,
                         };
-
-                        renderer.render_layer(
-                            layer,
-                            &shared_view,
-                            &state.render.display_options,
-                        )?;
+                        renderer.render_layer(layer, &right_view, &state.render.display_options)?;
                         any_layer_rendered = true;
                     }
                 }
@@ -1566,7 +1814,7 @@ fn render_frame(
             // Restore full viewport and view offsets before egui overlay
             renderer.restore_full_viewport(full_phys_w, full_phys_h);
             renderer.set_view_offset_x(-sidebar_w / 2.0);
-            renderer.set_view_offset_y(((UI_TOOLBAR_HEIGHT + tab_bar_h) - bottom_h) / 2.0);
+            renderer.set_view_offset_y((hdr_h - bottom_h) / 2.0);
             state.render.display_options.file_color_override = None;
         }
     }
@@ -1705,12 +1953,11 @@ fn update_hover_info(
     let current_z = state.navigation.state().current_z;
 
     let mouse = &window.input_state.mouse_pos;
-    let (logical_w, logical_h) = window.logical_size();
-    let has_tab_bar = state.tab_manager.has_tabs();
-    let hdr_h = header_height(has_tab_bar);
-    let (sidebar_w, vp_w, vp_h) = viewport_params(ui, logical_w, logical_h, has_tab_bar);
+    let vp = ui.state.cached_viewport_rect;
+    let vp_w = vp.width();
+    let vp_h = vp.height();
     let world = state.render.view_state.screen_to_world(
-        mouse.x - sidebar_w, mouse.y - hdr_h, vp_w, vp_h,
+        mouse.x - vp.left(), mouse.y - vp.top(), vp_w, vp_h,
     );
 
     let opts = &state.render.display_options;

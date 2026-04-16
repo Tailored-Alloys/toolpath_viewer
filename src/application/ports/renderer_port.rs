@@ -58,6 +58,28 @@ pub struct DisplayOptions {
     pub background_color: Color,
     /// Line width multiplier
     pub line_width: f32,
+    /// Boundary line width multiplier (relative to base line_width)
+    pub boundary_width_multiplier: f32,
+    /// Contour line width multiplier (relative to base line_width)
+    pub contour_width_multiplier: f32,
+    /// Hatch line width multiplier (relative to base line_width)
+    pub hatch_width_multiplier: f32,
+    /// Arrow size multiplier (scales arrow arm length)
+    pub arrow_size_multiplier: f32,
+    /// Wait marker (dot) size multiplier
+    pub wait_marker_size_multiplier: f32,
+    /// Alpha for future (not-yet-drawn) vectors in playback
+    pub future_vector_alpha: f32,
+    /// Show directional gradient (fade from start to end of vector)
+    pub show_direction_gradient: bool,
+    /// Minor grid line width
+    pub grid_line_width_minor: f32,
+    /// Major grid line width
+    pub grid_line_width_major: f32,
+    /// Grid opacity multiplier (0.0–1.0)
+    pub grid_opacity: f32,
+    /// Anti-aliasing (line smoothing)
+    pub antialiasing: bool,
     /// Maximum vector index to render (None = all vectors, Some(n) = 0..=n)
     pub max_vector_index: Option<usize>,
     /// Minor grid line color
@@ -86,6 +108,17 @@ impl Default for DisplayOptions {
             grid_unit: GridUnit::Millimeters,
             background_color: Color::from_hex("#FAFAFA").unwrap_or(Color::WHITE),
             line_width: 1.5,
+            boundary_width_multiplier: 1.5,
+            contour_width_multiplier: 1.0,
+            hatch_width_multiplier: 0.8,
+            arrow_size_multiplier: 1.0,
+            wait_marker_size_multiplier: 1.0,
+            future_vector_alpha: 0.15,
+            show_direction_gradient: true,
+            grid_line_width_minor: 1.0,
+            grid_line_width_major: 1.5,
+            grid_opacity: 1.0,
+            antialiasing: true,
             max_vector_index: None,
             grid_minor_color: Color::new(0.0, 0.0, 0.0, 0.08),
             grid_major_color: Color::new(0.0, 0.0, 0.0, 0.20),

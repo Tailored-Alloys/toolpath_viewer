@@ -28,7 +28,6 @@ pub use input::*;
 pub use ui::*;
 pub use layout::TOOLBAR_HEIGHT;
 pub use layout::TOOLBAR_BOTTOM;
-pub use layout::SIDEBAR_WIDTH;
 pub use layout::ACTIVITY_BAR_WIDTH;
 pub use layout::STATUS_BAR_HEIGHT;
 pub use layout::VECTOR_PLAYER_HEIGHT;

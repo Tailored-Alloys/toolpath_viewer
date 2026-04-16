@@ -27,6 +27,7 @@ pub fn show_layer_slider(
     total_layers: usize,
     current_z: f32,
     global_units: &GlobalUnits,
+    focus_layer_input: &mut bool,
 ) -> LayerSliderOutput {
     let mut output = LayerSliderOutput::default();
     let t = theme::active();
@@ -222,7 +223,12 @@ pub fn show_layer_slider(
                             .clamp_range(1..=(total_layers as i64))
                             .speed(1.0)
                             .suffix(format!("/{}", total_layers));
-                        if ui.put(input_rect, dv).changed() {
+                        let dv_response = ui.put(input_rect, dv);
+                        if *focus_layer_input {
+                            dv_response.request_focus();
+                            *focus_layer_input = false;
+                        }
+                        if dv_response.changed() {
                             output.new_layer = (jump_val as usize)
                                 .saturating_sub(1)
                                 .min(total_layers.saturating_sub(1));

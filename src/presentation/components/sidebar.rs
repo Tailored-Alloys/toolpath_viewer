@@ -3,8 +3,8 @@
 //! Renders the content panel portion of the VS Code–style sidebar.
 //! The Activity Bar (icon strip) is rendered separately by `activity_bar.rs`.
 //! This component dispatches to the active tab's content:
-//! - Parts: file list (add/remove/visibility)
-//! - Color Map: parameter gradient + wait gradient + filter controls
+//! - Toolpaths: file list (add/remove/visibility)
+//! - Parameter Legend: parameter gradient + wait gradient + filter controls
 
 use egui::{Color32, Context, DragValue, RichText, Rounding, Stroke, Vec2};
 use lucide_icons::Icon as LucideIcon;
@@ -88,12 +88,12 @@ pub fn show_sidebar(
         .show(ctx, |ui| {
             // Tab header label
             let tab_label = match active_tab {
-                SidebarTab::Parts => "PARTS",
-                SidebarTab::ColorMap => "COLOR MAP",
+                SidebarTab::Toolpaths => "TOOLPATHS",
+                SidebarTab::ParameterLegend => "PARAMETER LEGEND",
             };
             let tab_icon = match active_tab {
-                SidebarTab::Parts => LucideIcon::Files.unicode(),
-                SidebarTab::ColorMap => LucideIcon::Palette.unicode(),
+                SidebarTab::Toolpaths => LucideIcon::Files.unicode(),
+                SidebarTab::ParameterLegend => LucideIcon::Palette.unicode(),
             };
             ui.horizontal(|ui| {
                 ui.label(
@@ -111,11 +111,11 @@ pub fn show_sidebar(
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
                     match active_tab {
-                        SidebarTab::Parts => {
-                            show_parts_tab(ui, files, color_mode, view_mode, active_tab_file, &mut output, &t);
+                        SidebarTab::Toolpaths => {
+                            show_toolpaths_tab(ui, files, color_mode, view_mode, active_tab_file, &mut output, &t);
                         }
-                        SidebarTab::ColorMap => {
-                            show_color_map_tab(
+                        SidebarTab::ParameterLegend => {
+                            show_parameter_legend_tab(
                                 ui,
                                 show_gradient,
                                 param_mode,
@@ -138,9 +138,9 @@ pub fn show_sidebar(
     output
 }
 
-// ── Parts tab content ──
+// ── Toolpaths tab content ──
 
-fn show_parts_tab(
+fn show_toolpaths_tab(
     ui: &mut egui::Ui,
     files: &FileCollection,
     color_mode: ColorMode,
@@ -149,22 +149,19 @@ fn show_parts_tab(
     output: &mut SidebarOutput,
     t: &theme::ActiveTheme,
 ) {
-    // ── Import button (primary action, at the top) ──
+    // ── Import Toolpath button (prominent CTA at the top) ──
     let import_icon = LucideIcon::FolderOpen.unicode();
     let import_btn = egui::Button::new(
-        RichText::new(format!("{} Import", import_icon))
-            .size(12.0)
-            .color(t.text_primary),
+        RichText::new(format!("{} Import Toolpath", import_icon))
+            .size(12.5)
+            .strong()
+            .color(Color32::WHITE),
     )
-    .fill(if t.is_dark {
-        Color32::from_rgba_unmultiplied(255, 255, 255, 12)
-    } else {
-        Color32::from_rgba_unmultiplied(0, 0, 0, 8)
-    })
-    .stroke(Stroke::new(1.0, t.toolbar_border))
-    .rounding(Rounding::same(5.0))
-    .min_size(Vec2::new(ui.available_width(), 28.0));
-    if ui.add(import_btn).on_hover_text("Import file (Ctrl+O)").clicked() {
+    .fill(t.accent)
+    .stroke(Stroke::NONE)
+    .rounding(Rounding::same(6.0))
+    .min_size(Vec2::new(ui.available_width(), 36.0));
+    if ui.add(import_btn).on_hover_text("Import toolpath file (Ctrl+O)").clicked() {
         output.add_files_requested = true;
     }
 
@@ -285,24 +282,28 @@ fn show_parts_tab(
     ui.separator();
     ui.add_space(4.0);
 
-    // Add more files button (compact)
+    // Add more toolpaths button (secondary/outline style)
     let add_icon = LucideIcon::Plus.unicode();
+    let accent_outline = Color32::from_rgba_unmultiplied(
+        t.accent.r(), t.accent.g(), t.accent.b(), 40,
+    );
     let add_btn = egui::Button::new(
-        RichText::new(format!("{} Add Files", add_icon))
+        RichText::new(format!("{} Add Toolpath", add_icon))
             .size(11.0)
-            .color(t.text_secondary),
+            .color(t.accent),
     )
     .fill(Color32::TRANSPARENT)
-    .rounding(Rounding::same(4.0))
-    .min_size(Vec2::new(0.0, 22.0));
-    if ui.add(add_btn).on_hover_text("Add more files (Ctrl+O)").clicked() {
+    .stroke(Stroke::new(1.0, accent_outline))
+    .rounding(Rounding::same(5.0))
+    .min_size(Vec2::new(ui.available_width(), 26.0));
+    if ui.add(add_btn).on_hover_text("Add more toolpath files (Ctrl+O)").clicked() {
         output.add_files_requested = true;
     }
 }
 
-// ── Color Map tab content ──
+// ── Parameter Legend tab content ──
 
-fn show_color_map_tab(
+fn show_parameter_legend_tab(
     ui: &mut egui::Ui,
     show_gradient: bool,
     param_mode: Option<ParameterMode>,
@@ -336,7 +337,7 @@ fn show_color_map_tab(
     if !show_gradient && !show_wait_gradient {
         ui.add_space(8.0);
         ui.label(
-            RichText::new("Select a color mode (Power, Speed) from the toolbar to view the color map.")
+            RichText::new("Select a color mode (Power, Speed) from the toolbar to view the parameter legend.")
                 .size(10.0)
                 .color(t.text_secondary),
         );

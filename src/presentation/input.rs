@@ -80,6 +80,38 @@ pub enum InputAction {
     ToggleVectorPlayback,
     /// Toggle sidebar
     ToggleSidebar,
+    /// Switch to next tab (Ctrl+Tab)
+    NextTab,
+    /// Switch to previous tab (Ctrl+Shift+Tab)
+    PrevTab,
+    /// Close active tab (Ctrl+W)
+    CloseTab,
+    /// Jump to first vector (Ctrl+Left)
+    FirstVector,
+    /// Jump to last vector (Ctrl+Right)
+    LastVector,
+    /// Increase playback speed
+    PlaybackSpeedUp,
+    /// Decrease playback speed
+    PlaybackSpeedDown,
+    /// Undo last measurement (Ctrl+Z)
+    UndoMeasurement,
+    /// Focus the "Go to layer" input field
+    FocusLayerInput,
+    /// Cycle view mode (Overlay → Tab → Split)
+    CycleViewMode,
+    /// Jump to a specific tab by 1-based position (Ctrl+1..9)
+    JumpToTab(usize),
+    /// Toggle split view on/off
+    ToggleSplit,
+    /// Focus the left pane in split mode
+    FocusLeftPane,
+    /// Focus the right pane in split mode
+    FocusRightPane,
+    /// Set color mode: By File/Part
+    ParamModeFile,
+    /// Toggle preferences dialog
+    TogglePreferences,
     /// Quit application
     Quit,
 }
@@ -174,26 +206,64 @@ pub fn key_to_action(key: &str, ctrl: bool, shift: bool) -> Option<InputAction> 
         ("n", false, false) => Some(InputAction::ToggleVectorView),
         ("right", false, false) => Some(InputAction::NextVector),
         ("left", false, false) => Some(InputAction::PrevVector),
+        ("right", true, false) => Some(InputAction::LastVector),
+        ("left", true, false) => Some(InputAction::FirstVector),
         ("space", false, false) => Some(InputAction::ToggleVectorPlayback),
+        ("]", false, false) => Some(InputAction::PlaybackSpeedUp),
+        ("[", false, false) => Some(InputAction::PlaybackSpeedDown),
 
         // Tools
         ("x", false, false) => Some(InputAction::ClearMeasurements),
+        ("z", true, false) => Some(InputAction::UndoMeasurement),
 
         // Sidebar
         ("e", false, false) => Some(InputAction::ToggleSidebar),
+
+        // Layer input focus
+        ("l", false, false) => Some(InputAction::FocusLayerInput),
+
+        // View mode cycling (Ctrl+Shift+\)
+        ("\\", true, true) => Some(InputAction::CycleViewMode),
+
+        // Toggle split view (Ctrl+\)
+        ("\\", true, false) => Some(InputAction::ToggleSplit),
+
+        // Tab management
+        ("tab", true, false) => Some(InputAction::NextTab),
+        ("tab", true, true) => Some(InputAction::PrevTab),
+        ("w", true, false) => Some(InputAction::CloseTab),
+
+        // Jump to tab by position (Ctrl+1..9)
+        ("1", true, false) => Some(InputAction::JumpToTab(0)),
+        ("2", true, false) => Some(InputAction::JumpToTab(1)),
+        ("3", true, false) => Some(InputAction::JumpToTab(2)),
+        ("4", true, false) => Some(InputAction::JumpToTab(3)),
+        ("5", true, false) => Some(InputAction::JumpToTab(4)),
+        ("6", true, false) => Some(InputAction::JumpToTab(5)),
+        ("7", true, false) => Some(InputAction::JumpToTab(6)),
+        ("8", true, false) => Some(InputAction::JumpToTab(7)),
+        ("9", true, false) => Some(InputAction::JumpToTab(8)),
+
+        // Split pane focus (Ctrl+Alt uses alt_held check in caller, but here
+        // we only receive ctrl+shift — so we use Ctrl+Shift+Left/Right)
+        ("left", true, true) => Some(InputAction::FocusLeftPane),
+        ("right", true, true) => Some(InputAction::FocusRightPane),
 
         // Color modes
         ("1", false, false) => Some(InputAction::ParamModeNone),
         ("2", false, false) => Some(InputAction::ParamModePower),
         ("3", false, false) => Some(InputAction::ParamModeSpeed),
-
+        ("4", false, false) => Some(InputAction::ParamModeFile),
 
         // File operations
         ("o", true, false) => Some(InputAction::OpenFile),
 
         // Snapshot
         ("p", true, false) => Some(InputAction::Snapshot),
-        
+
+        // Preferences
+        (",", true, false) => Some(InputAction::TogglePreferences),
+
         // Application
         ("q", true, false) | ("escape", _, _) => Some(InputAction::Quit),
         

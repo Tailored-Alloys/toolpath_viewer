@@ -162,6 +162,8 @@ pub struct GlRenderer {
     last_hatch_count: usize,
     /// Whether we've logged shader/uniform diagnostics
     logged_once: bool,
+    /// Whether anti-aliasing (line smoothing) is enabled
+    antialiasing: bool,
 }
 
 impl GlRenderer {
@@ -186,6 +188,7 @@ impl GlRenderer {
             initialized: false,
             last_hatch_count: usize::MAX,
             logged_once: false,
+            antialiasing: true,
         }
     }
 
@@ -262,7 +265,7 @@ impl GlRenderer {
     }
 
     /// Render the background grid before layer content.
-    pub fn render_grid(&mut self, view: &ViewState, minor_color: &Color, major_color: &Color) -> RenderResult<()> {
+    pub fn render_grid(&mut self, view: &ViewState, options: &DisplayOptions) -> RenderResult<()> {
         let shader = self.shader.as_ref().ok_or_else(|| {
             RenderError::InvalidState("Shader not initialized".to_string())
         })?;
@@ -284,7 +287,12 @@ impl GlRenderer {
 
         let viewport_w = logical_w;
         let viewport_h = logical_h;
-        self.grid_renderer.prepare_with_colors(view, viewport_w, viewport_h, *minor_color, *major_color);
+        self.grid_renderer.prepare_with_colors(
+            view, viewport_w, viewport_h,
+            options.grid_minor_color, options.grid_major_color,
+            options.grid_line_width_minor, options.grid_line_width_major,
+            options.grid_opacity,
+        );
         self.grid_renderer.render();
 
         Ok(())
@@ -349,11 +357,12 @@ impl GlRenderer {
         self.arrow_batch.clear();
         self.wait_marker_batch.clear();
         self.show_wait_markers = options.show_wait_markers;
+        self.antialiasing = options.antialiasing;
 
         let dim_color = Color::rgb(0.3, 0.3, 0.3);
 
         let marker_size = compute_marker_size(layer);
-        let arrow_arm = (marker_size * 0.8).clamp(ARROW_ARM_MIN, ARROW_ARM_MAX);
+        let arrow_arm = (marker_size * 0.8 * options.arrow_size_multiplier).clamp(ARROW_ARM_MIN, ARROW_ARM_MAX);
         // Place arrows every `arrow_spacing` world-units along polylines
         let arrow_spacing = marker_size * 8.0;
 
@@ -395,7 +404,7 @@ impl GlRenderer {
 
             // Mute future vectors when vector-by-vector view is active
             let color = if !is_active && options.max_vector_index.is_some() {
-                color.with_alpha(0.15)
+                color.with_alpha(options.future_vector_alpha)
             } else {
                 color
             };
@@ -404,7 +413,7 @@ impl GlRenderer {
             let mut visible = false;
 
             // Use gradient coloring for active vectors in vector view mode
-            let use_gradient = is_active && options.max_vector_index.is_some();
+            let use_gradient = is_active && options.max_vector_index.is_some() && options.show_direction_gradient;
 
             match vector.vector_type {
                 VectorType::Boundary => {
@@ -520,7 +529,8 @@ impl GlRenderer {
                     };
                     let wait_color = self.eval_gradient(t);
                     // Radius scales linearly with normalized wait time
-                    let circle_radius = (CIRCLE_RADIUS_MIN + t * (CIRCLE_RADIUS_MAX - CIRCLE_RADIUS_MIN))
+                    let circle_radius = ((CIRCLE_RADIUS_MIN + t * (CIRCLE_RADIUS_MAX - CIRCLE_RADIUS_MIN))
+                        * options.wait_marker_size_multiplier)
                         .clamp(CIRCLE_RADIUS_MIN, CIRCLE_RADIUS_MAX);
                     
                     match vector.vector_type {
@@ -540,11 +550,11 @@ impl GlRenderer {
             }
         }
 
-        self.contour_batch.set_line_width(options.line_width);
-        self.boundary_batch.set_line_width(options.line_width * 1.5);
-        self.hatch_batch.set_line_width(options.line_width * 0.8);
-        self.arrow_batch.set_line_width(options.line_width * 0.8);
-        self.wait_marker_batch.set_line_width(options.line_width * 1.5);
+        self.contour_batch.set_line_width(options.line_width * options.contour_width_multiplier);
+        self.boundary_batch.set_line_width(options.line_width * options.boundary_width_multiplier);
+        self.hatch_batch.set_line_width(options.line_width * options.hatch_width_multiplier);
+        self.arrow_batch.set_line_width(options.line_width * options.hatch_width_multiplier);
+        self.wait_marker_batch.set_line_width(options.line_width * options.boundary_width_multiplier);
 
         let hatch_count = self.hatch_batch.vertex_count() / 2;
         if hatch_count != self.last_hatch_count {
@@ -676,7 +686,11 @@ impl Renderer for GlRenderer {
             gl::Viewport(0, 0, self.width as i32, self.height as i32);
             gl::Enable(gl::BLEND);
             gl::BlendFunc(gl::SRC_ALPHA, gl::ONE_MINUS_SRC_ALPHA);
-            gl::Enable(gl::LINE_SMOOTH);
+            if self.antialiasing {
+                gl::Enable(gl::LINE_SMOOTH);
+            } else {
+                gl::Disable(gl::LINE_SMOOTH);
+            }
         }
         Ok(())
     }

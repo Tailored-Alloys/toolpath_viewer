@@ -36,6 +36,7 @@ pub fn show_toolbar(
     show_controls: &mut bool,
     show_preferences: &mut bool,
     has_multiple_files: bool,
+    has_tab_bar: bool,
 ) -> ToolbarOutput {
     let output = ToolbarOutput::default();
     let t = theme::active();
@@ -45,10 +46,21 @@ pub fn show_toolbar(
         .frame(
             egui::Frame::none()
                 .fill(t.toolbar_bg)
-                .stroke(Stroke::new(1.0, t.toolbar_border))
                 .inner_margin(egui::Margin::symmetric(12.0, 8.0)),
         )
         .show(ctx, |ui| {
+            // Only draw a bottom border when there is no tab bar below
+            // (the tab bar draws its own bottom border as the separator)
+            if !has_tab_bar {
+                let panel_rect = ui.max_rect();
+                ui.painter().line_segment(
+                    [
+                        egui::pos2(panel_rect.left(), panel_rect.bottom()),
+                        egui::pos2(panel_rect.right(), panel_rect.bottom()),
+                    ],
+                    Stroke::new(1.0, t.toolbar_border),
+                );
+            }
             ui.horizontal_centered(|ui| {
                 // ── Group 1: Display ──
                 let icon_arrow = &LucideIcon::Navigation2.unicode().to_string();

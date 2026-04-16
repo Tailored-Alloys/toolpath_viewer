@@ -8,11 +8,12 @@ use egui::{Context, ViewportId};
 use egui_glow::Painter;
 use egui_winit::EventResponse;
 use egui_winit::State as EguiWinitState;
+use lucide_icons::Icon as LucideIcon;
 use std::sync::Arc;
 
 use crate::application::ports::{ColorMode, GlobalUnits, PaletteId, ParameterMode, ThemeMode, ViewMode};
 
-use super::layout::{LayoutRegions, VisibilityFlags, TOOLBAR_HEIGHT, TAB_BAR_HEIGHT};
+use super::layout::{LayoutRegions, VisibilityFlags, TOOLBAR_HEIGHT, TOOLBAR_BOTTOM, TAB_BAR_HEIGHT};
 use super::palette::{self, ThemePalette, ResolvedMode};
 use super::theme;
 use super::components;
@@ -23,15 +24,15 @@ use super::tab_state::TabManager;
 /// Active sidebar tab in the Activity Bar
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SidebarTab {
-    /// Parts / file browser tab
-    Parts,
-    /// Color map / legend tab
-    ColorMap,
+    /// Toolpaths / file browser tab
+    Toolpaths,
+    /// Parameter legend / color map tab
+    ParameterLegend,
 }
 
 impl Default for SidebarTab {
     fn default() -> Self {
-        SidebarTab::Parts
+        SidebarTab::Toolpaths
     }
 }
 
@@ -181,6 +182,24 @@ pub struct UiOutput {
     pub split_partner_changed: Option<usize>,
     /// Drag-to-split: activate split mode with this tab as partner
     pub drag_to_split: Option<usize>,
+    /// Overlay mode: toggle visibility of this file ID
+    pub overlay_toggle: Option<usize>,
+    /// Overlay mode: select all files visible
+    pub overlay_select_all: bool,
+    /// Overlay mode: show only this file (file ID)
+    pub overlay_select_only: Option<usize>,
+    /// Context menu: close all tabs except this one
+    pub close_others: Option<usize>,
+    /// Context menu: close all tabs
+    pub close_all: bool,
+    /// Context menu: show in split view
+    pub show_in_split: Option<usize>,
+    /// Split mode: user clicked a tab in the right pane
+    pub split_right_switch: Option<usize>,
+    /// Tab reorder: (from_index, to_index) in open_tab_ids
+    pub reorder_tab: Option<(usize, usize)>,
+    /// Split sync toggle was clicked
+    pub split_sync_toggled: bool,
     /// Tool state output
     pub tool_state: ToolState,
     /// Global unit settings
@@ -199,8 +218,18 @@ pub struct UiOutput {
     pub vector_view_playing: bool,
     /// Whether theme/palette changed this frame
     pub theme_changed: bool,
+    /// Whether canvas settings changed this frame
+    pub canvas_changed: bool,
     /// The active palette (for renderer sync)
     pub active_palette: ThemePalette,
+    /// Viewport rect from LayoutRegions (single source of truth for GL + input)
+    pub viewport_rect: egui::Rect,
+    /// Total sidebar width (activity bar + content) in logical pixels
+    pub sidebar_total_width: f32,
+    /// Height of bottom bars (status bar + optional vector player) in logical pixels
+    pub bottom_bar_height: f32,
+    /// Header height (toolbar + optional tab bar) in logical pixels
+    pub header_height: f32,
 }
 
 /// Vector count info for display
@@ -263,6 +292,8 @@ pub struct UiState {
     pub sidebar_open: bool,
     /// Active sidebar tab
     pub active_sidebar_tab: SidebarTab,
+    /// Dynamic sidebar content panel width (user-resizable)
+    pub sidebar_content_width: f32,
     /// Layer jump input value (text field for direct entry)
     pub layer_jump_value: String,
     /// Tool state
@@ -305,6 +336,8 @@ pub struct UiState {
     pub system_is_dark: bool,
     /// Whether theme/palette changed this frame (signals renderer update)
     pub theme_changed: bool,
+    /// Whether canvas settings changed this frame
+    pub canvas_changed: bool,
     /// Whether multiple files are loaded (controls ByFile color mode availability)
     pub has_multiple_files: bool,
     /// Active view mode
@@ -319,6 +352,12 @@ pub struct UiState {
     pub tab_drag_id: Option<usize>,
     /// Current drag position on screen (logical pixels)
     pub tab_drag_pos: Option<egui::Pos2>,
+    /// Cached viewport rect from LayoutRegions (updated each frame, used by event handlers)
+    pub cached_viewport_rect: egui::Rect,
+    /// Canvas rendering settings (line thickness, markers, grid, etc.)
+    pub canvas_settings: crate::application::ports::CanvasConfig,
+    /// Flag to request focus on the "Go to layer" input field (consumed by layer_slider)
+    pub focus_layer_input: bool,
 }
 
 impl Default for UiState {
@@ -345,6 +384,7 @@ impl Default for UiState {
             show_controls: false,
             sidebar_open: false,
             active_sidebar_tab: SidebarTab::default(),
+            sidebar_content_width: super::layout::SIDEBAR_WIDTH,
             layer_jump_value: String::new(),
             tool_state: ToolState::default(),
             global_units: GlobalUnits::default(),
@@ -366,6 +406,7 @@ impl Default for UiState {
             show_preferences: false,
             system_is_dark: false,
             theme_changed: false,
+            canvas_changed: false,
             has_multiple_files: false,
             view_mode: ViewMode::Overlay,
             active_tab_file: None,
@@ -373,6 +414,9 @@ impl Default for UiState {
             mouse_world_pos: None,
             tab_drag_id: None,
             tab_drag_pos: None,
+            cached_viewport_rect: egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(100.0, 100.0)),
+            canvas_settings: crate::application::ports::CanvasConfig::default(),
+            focus_layer_input: false,
         }
     }
 }
@@ -394,6 +438,8 @@ impl UiState {
         let preserved_active_tab = self.active_tab_file;
         let preserved_split_ratio = self.split_ratio;
         let preserved_sidebar_tab = self.active_sidebar_tab;
+        let preserved_sidebar_width = self.sidebar_content_width;
+        let preserved_canvas = self.canvas_settings.clone();
         *self = UiState::default();
         self.global_units = preserved_units;
         self.theme_mode = preserved_mode;
@@ -404,6 +450,8 @@ impl UiState {
         self.system_is_dark = preserved_sys_dark;
         self.sidebar_open = preserved_show_file_panel;
         self.active_sidebar_tab = preserved_sidebar_tab;
+        self.sidebar_content_width = preserved_sidebar_width;
+        self.canvas_settings = preserved_canvas;
         self.color_mode = preserved_color_mode;
         self.view_mode = preserved_view_mode;
         self.active_tab_file = preserved_active_tab;
@@ -531,6 +579,7 @@ impl UiRenderer {
             vector_view_active: self.state.vector_view_enabled,
             sidebar_open: self.state.sidebar_open,
             has_tab_bar: tab_manager.has_tabs(),
+            sidebar_content_width: self.state.sidebar_content_width,
         };
         let regions = LayoutRegions::compute(screen, &flags);
 
@@ -552,6 +601,15 @@ impl UiRenderer {
         let mut view_mode_changed: Option<ViewMode> = None;
         let mut split_partner_changed: Option<usize> = None;
         let mut drag_to_split: Option<usize> = None;
+        let mut overlay_toggle: Option<usize> = None;
+        let mut overlay_select_all = false;
+        let mut overlay_select_only: Option<usize> = None;
+        let mut close_others: Option<usize> = None;
+        let mut close_all = false;
+        let mut show_in_split: Option<usize> = None;
+        let mut split_right_switch: Option<usize> = None;
+        let mut reorder_tab: Option<(usize, usize)> = None;
+        let mut split_sync_toggled = false;
 
         // Build tab info for the tab bar component
         let tab_infos: Vec<components::TabInfo> = tab_manager.open_tab_ids.iter()
@@ -561,12 +619,15 @@ impl UiRenderer {
                     name: f.name.clone(),
                     color: f.color,
                     is_active: tab_manager.active_tab_id == Some(f.id),
+                    is_overlay_visible: tab_manager.is_overlay_visible(f.id),
                 })
             })
             .collect();
         let tab_bar_view_mode = self.state.view_mode;
         let tab_bar_has_multiple = files.len() >= 2;
         let tab_bar_split_partner = tab_manager.split_partner_id;
+        let tab_bar_split_right_active = tab_manager.split_right_active_id;
+        let tab_bar_overlay_visible = tab_manager.overlay_visible_ids.clone();
 
         // Run egui
         let full_output = self.ctx.run(raw_input, |ctx| {
@@ -591,6 +652,7 @@ impl UiRenderer {
                 &mut self.state.show_controls,
                 &mut self.state.show_preferences,
                 self.state.has_multiple_files,
+                flags.has_tab_bar,
             );
 
             // ── Status bar (bottom, full width — claims bottom space early) ──
@@ -711,6 +773,9 @@ impl UiRenderer {
                     tab_bar_view_mode,
                     tab_bar_has_multiple,
                     tab_bar_split_partner,
+                    tab_bar_split_right_active,
+                    &tab_bar_overlay_visible,
+                    self.state.split_ratio,
                 );
                 if tb_out.switch_to_tab.is_some() {
                     switch_tab = tb_out.switch_to_tab;
@@ -723,6 +788,30 @@ impl UiRenderer {
                 }
                 if tb_out.split_partner_changed.is_some() {
                     split_partner_changed = tb_out.split_partner_changed;
+                }
+                if tb_out.overlay_toggle.is_some() {
+                    overlay_toggle = tb_out.overlay_toggle;
+                }
+                if tb_out.overlay_select_all {
+                    overlay_select_all = true;
+                }
+                if tb_out.overlay_select_only.is_some() {
+                    overlay_select_only = tb_out.overlay_select_only;
+                }
+                if tb_out.close_others.is_some() {
+                    close_others = tb_out.close_others;
+                }
+                if tb_out.close_all {
+                    close_all = true;
+                }
+                if tb_out.show_in_split.is_some() {
+                    show_in_split = tb_out.show_in_split;
+                }
+                if tb_out.split_right_switch.is_some() {
+                    split_right_switch = tb_out.split_right_switch;
+                }
+                if tb_out.reorder_tab.is_some() {
+                    reorder_tab = tb_out.reorder_tab;
                 }
 
                 // ── Drag-to-split handling ──
@@ -790,6 +879,7 @@ impl UiRenderer {
                     self.state.total_layers,
                     self.state.current_z,
                     &self.state.global_units,
+                    &mut self.state.focus_layer_input,
                 );
                 if slider_out.layer_changed {
                     layer_changed = true;
@@ -814,7 +904,7 @@ impl UiRenderer {
 
             // (file panel now in sidebar)
 
-            // ── Split divider overlay (draggable) ──
+            // ── Split divider overlay (draggable, with sync toggle on hover) ──
             if self.state.view_mode == ViewMode::Split {
                 let vp = regions.viewport;
                 let divider_x = vp.left() + vp.width() * self.state.split_ratio;
@@ -823,163 +913,115 @@ impl UiRenderer {
                 let gap = super::layout::SPLIT_GAP;
                 let half_gap = gap / 2.0;
 
-                // Draw divider strip (visible gap between panes)
-                let painter = ctx.layer_painter(egui::LayerId::new(
-                    egui::Order::Foreground,
-                    egui::Id::new("split_divider_line"),
-                ));
                 let t = super::theme::active();
-                let divider_bg = if t.is_dark {
-                    egui::Color32::from_rgb(45, 45, 45)
-                } else {
-                    egui::Color32::from_rgb(210, 210, 210)
-                };
                 let divider_border = if t.is_dark {
-                    egui::Color32::from_rgb(70, 70, 70)
+                    egui::Color32::from_rgb(55, 55, 55)
                 } else {
-                    egui::Color32::from_rgb(180, 180, 180)
+                    egui::Color32::from_rgb(195, 195, 195)
                 };
-                // Fill the gap background
-                painter.rect_filled(
-                    egui::Rect::from_min_max(
-                        egui::pos2(divider_x - half_gap, divider_top),
-                        egui::pos2(divider_x + half_gap, divider_bottom),
-                    ),
-                    0.0,
-                    divider_bg,
-                );
-                // Draw border lines on each edge of the gap
-                painter.line_segment(
-                    [egui::pos2(divider_x - half_gap, divider_top), egui::pos2(divider_x - half_gap, divider_bottom)],
-                    egui::Stroke::new(1.0, divider_border),
-                );
-                painter.line_segment(
-                    [egui::pos2(divider_x + half_gap, divider_top), egui::pos2(divider_x + half_gap, divider_bottom)],
-                    egui::Stroke::new(1.0, divider_border),
-                );
 
-                // Drag handle using an invisible Area
-                egui::Area::new(egui::Id::new("split_divider_drag"))
-                    .fixed_pos(egui::pos2(divider_x - half_gap - 3.0, divider_top))
+                // Drag handle — covers the full divider height, captures drag + hover
+                let drag_area_id = egui::Id::new("split_divider_drag");
+                let drag_area_resp = egui::Area::new(drag_area_id)
+                    .fixed_pos(egui::pos2(divider_x - half_gap - 2.0, divider_top))
                     .order(egui::Order::Foreground)
                     .interactable(true)
                     .show(ctx, |ui| {
-                        let handle_size = egui::vec2(gap + 6.0, divider_bottom - divider_top);
-                        let (_, drag_resp) = ui.allocate_exact_size(handle_size, egui::Sense::drag());
+                        let handle_size = egui::vec2(gap + 4.0, divider_bottom - divider_top);
+                        let (_, drag_resp) = ui.allocate_exact_size(handle_size, egui::Sense::click_and_drag());
                         if drag_resp.dragged() {
                             let new_x = (divider_x + drag_resp.drag_delta().x)
                                 .clamp(vp.left() + 100.0, vp.right() - 100.0);
                             self.state.split_ratio = (new_x - vp.left()) / vp.width();
                         }
-                        if drag_resp.hovered() || drag_resp.dragged() {
+                        let is_hovered = drag_resp.hovered() || drag_resp.dragged();
+                        if is_hovered {
                             ctx.set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
-                            // Highlight the divider on hover
-                            let t = super::theme::active();
-                            let painter = ctx.layer_painter(egui::LayerId::new(
-                                egui::Order::Foreground,
-                                egui::Id::new("split_divider_highlight"),
-                            ));
-                            painter.rect_filled(
-                                egui::Rect::from_min_max(
-                                    egui::pos2(divider_x - half_gap, divider_top),
-                                    egui::pos2(divider_x + half_gap, divider_bottom),
-                                ),
-                                0.0,
-                                t.accent.linear_multiply(0.4),
-                            );
                         }
+
+                        // Click on divider area toggles sync
+                        if drag_resp.clicked() {
+                            split_sync_toggled = true;
+                        }
+
+                        is_hovered
                     });
-            }
+                let divider_hovered = drag_area_resp.inner;
 
-            // ── Split viewport file labels (top-left of each pane) ──
-            if self.state.view_mode == ViewMode::Split && tab_infos.len() >= 2 {
-                let vp = regions.viewport;
-                let divider_x = vp.left() + vp.width() * self.state.split_ratio;
-                let half_gap = super::layout::SPLIT_GAP / 2.0;
-                let label_y = vp.top() + 8.0;
-                let label_inset = 8.0;
-                let t = super::theme::active();
+                // Draw the divider visuals
+                let painter = ctx.layer_painter(egui::LayerId::new(
+                    egui::Order::Middle,
+                    egui::Id::new("split_divider_line"),
+                ));
 
-                // Left = active tab, Right = split partner (or second tab)
-                let active_id = tab_manager.active_tab_id;
-                let partner_id = tab_manager.split_partner_id
-                    .or_else(|| tab_manager.open_tab_ids.iter()
-                        .find(|&&id| Some(id) != active_id)
-                        .copied());
-                let split_ids = [active_id, partner_id];
-
-                for (idx, maybe_id) in split_ids.iter().enumerate() {
-                    let file = maybe_id.and_then(|id| files.files.iter().find(|f| f.id == id));
-                    let Some(file) = file else { continue };
-                    // Position at left edge of each pane
-                    let label_x = if idx == 0 {
-                        vp.left() + label_inset
-                    } else {
-                        divider_x + half_gap + label_inset
-                    };
-                    let area_id = if idx == 0 {
-                        "split_label_left"
-                    } else {
-                        "split_label_right"
-                    };
-
-                    let swatch_color = egui::Color32::from_rgba_unmultiplied(
-                        (file.color.r * 255.0) as u8,
-                        (file.color.g * 255.0) as u8,
-                        (file.color.b * 255.0) as u8,
-                        (file.color.a * 255.0) as u8,
+                if divider_hovered {
+                    // Highlighted: accent-colored line
+                    painter.rect_filled(
+                        egui::Rect::from_min_max(
+                            egui::pos2(divider_x - 1.0, divider_top),
+                            egui::pos2(divider_x + 1.0, divider_bottom),
+                        ),
+                        0.0,
+                        t.accent,
                     );
+                } else {
+                    // Default: thin subtle border line
+                    painter.line_segment(
+                        [egui::pos2(divider_x, divider_top), egui::pos2(divider_x, divider_bottom)],
+                        egui::Stroke::new(1.0, divider_border),
+                    );
+                }
 
-                    let max_name = 24;
-                    let display_name = if file.name.len() > max_name {
-                        format!("{}…", &file.name[..max_name])
+                // ── Sync indicator: small icon on the divider, visible on hover ──
+                if divider_hovered {
+                    let is_synced = tab_manager.split_cameras_synced;
+                    let grip_center_y = (divider_top + divider_bottom) / 2.0;
+                    let icon = if is_synced {
+                        LucideIcon::Link.unicode()
                     } else {
-                        file.name.clone()
+                        LucideIcon::Unlink.unicode()
                     };
+                    let icon_color = if is_synced { t.accent } else { t.text_secondary };
+                    let btn_size = 22.0;
+                    let btn_rect = egui::Rect::from_center_size(
+                        egui::pos2(divider_x, grip_center_y),
+                        egui::vec2(btn_size, btn_size),
+                    );
+                    let btn_bg = if t.is_dark {
+                        egui::Color32::from_rgb(45, 45, 45)
+                    } else {
+                        egui::Color32::from_rgb(240, 240, 240)
+                    };
+                    painter.rect_filled(btn_rect, egui::Rounding::same(btn_size / 2.0), btn_bg);
+                    painter.rect_stroke(btn_rect, egui::Rounding::same(btn_size / 2.0), egui::Stroke::new(1.0, divider_border));
 
-                    egui::Area::new(egui::Id::new(area_id))
-                        .fixed_pos(egui::pos2(label_x, label_y))
-                        .order(egui::Order::Foreground)
-                        .interactable(false)
-                        .show(ctx, |ui| {
-                            egui::Frame::none()
-                                .fill(t.panel_bg_translucent)
-                                .rounding(egui::Rounding::same(4.0))
-                                .shadow(egui::epaint::Shadow {
-                                    offset: egui::vec2(0.0, 1.0),
-                                    blur: 3.0,
-                                    spread: 0.0,
-                                    color: t.panel_shadow,
-                                })
-                                .inner_margin(egui::Margin::symmetric(6.0, 3.0))
-                                .show(ui, |ui| {
-                                    ui.horizontal(|ui| {
-                                        // Color swatch
-                                        let (rect, _) = ui.allocate_exact_size(
-                                            egui::vec2(10.0, 10.0),
-                                            egui::Sense::hover(),
-                                        );
-                                        ui.painter().rect_filled(rect, 2.0, swatch_color);
+                    let icon_galley = painter.layout_no_wrap(
+                        icon.to_string(),
+                        egui::FontId::proportional(10.0),
+                        icon_color,
+                    );
+                    let icon_pos = egui::pos2(
+                        btn_rect.center().x - icon_galley.size().x / 2.0,
+                        btn_rect.center().y - icon_galley.size().y / 2.0,
+                    );
+                    painter.galley(icon_pos, icon_galley, egui::Color32::TRANSPARENT);
 
-                                        ui.label(
-                                            egui::RichText::new(&display_name)
-                                                .size(11.0)
-                                                .color(t.text_primary),
-                                        );
-                                    });
-                                });
-                        });
+                    let tooltip = if is_synced { "Click to unlink cameras" } else { "Click to sync cameras" };
+                    // Show tooltip near the button
+                    egui::containers::popup::show_tooltip_at_pointer(ctx, egui::Id::new("sync_tip"),
+                        |ui| { ui.label(tooltip); }
+                    );
                 }
             }
 
-            // ── Sidebar / canvas vertical separator ──
-            // Draw a clear vertical line at the right edge of the sidebar spanning
-            // from the toolbar bottom to the viewport bottom.
+            // ── Sidebar / canvas vertical separator + drag-to-resize handle ──
             {
                 let t = super::theme::active();
                 let sep_x = regions.sidebar.total_width;
                 let sep_top = regions.toolbar.bottom();
                 let sep_bottom = regions.viewport.bottom();
+
+                // Draw the separator line
                 let painter = ctx.layer_painter(egui::LayerId::new(
                     egui::Order::Middle,
                     egui::Id::new("sidebar_canvas_separator"),
@@ -988,6 +1030,48 @@ impl UiRenderer {
                     [egui::pos2(sep_x, sep_top), egui::pos2(sep_x, sep_bottom)],
                     egui::Stroke::new(1.0, t.toolbar_border),
                 );
+
+                // Drag handle — only when sidebar content is visible
+                if regions.sidebar.content_visible {
+                    let drag_width = 6.0;
+                    let drag_rect = egui::Rect::from_min_max(
+                        egui::pos2(sep_x - drag_width / 2.0, sep_top),
+                        egui::pos2(sep_x + drag_width / 2.0, sep_bottom),
+                    );
+                    let drag_id = egui::Id::new("sidebar_resize_drag");
+                    let drag_area = egui::Area::new(drag_id)
+                        .order(egui::Order::Foreground)
+                        .fixed_pos(drag_rect.left_top())
+                        .interactable(true);
+                    drag_area.show(ctx, |ui| {
+                        let response = ui.allocate_rect(
+                            egui::Rect::from_min_size(
+                                drag_rect.left_top(),
+                                drag_rect.size(),
+                            ),
+                            egui::Sense::drag(),
+                        );
+                        if response.dragged() {
+                            let delta = response.drag_delta().x;
+                            self.state.sidebar_content_width = (self.state.sidebar_content_width + delta)
+                                .clamp(
+                                    super::layout::SIDEBAR_MIN_WIDTH,
+                                    super::layout::SIDEBAR_MAX_WIDTH,
+                                );
+                        }
+                        if response.hovered() || response.dragged() {
+                            ctx.set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
+                            // Highlight the separator on hover/drag
+                            let highlight_color = egui::Color32::from_rgba_unmultiplied(
+                                t.accent.r(), t.accent.g(), t.accent.b(), 80,
+                            );
+                            ui.painter().line_segment(
+                                [egui::pos2(sep_x, sep_top), egui::pos2(sep_x, sep_bottom)],
+                                egui::Stroke::new(2.0, highlight_color),
+                            );
+                        }
+                    });
+                }
             }
 
             // ── Active tab canvas border ──
@@ -1011,10 +1095,11 @@ impl UiRenderer {
                     let divider_x = vp.left() + vp.width() * self.state.split_ratio;
                     let half_gap = super::layout::SPLIT_GAP / 2.0;
 
-                    // Left pane border (top + right + bottom)
+                    // Inset rects by half the stroke width to keep borders inside the viewport
+                    // Left pane border (top + sides)
                     let left_rect = egui::Rect::from_min_max(
-                        egui::pos2(vp.left(), vp.top()),
-                        egui::pos2(divider_x - half_gap, vp.bottom()),
+                        egui::pos2(vp.left() + 0.5, vp.top()),
+                        egui::pos2(divider_x - half_gap - 0.5, vp.bottom()),
                     );
                     // Find the active tab's color for left pane accent
                     let active_color = tab_manager.active_tab_id
@@ -1024,12 +1109,12 @@ impl UiRenderer {
                             (f.color.b * 255.0) as u8, (f.color.a * 255.0) as u8,
                         ))
                         .unwrap_or(t.accent);
-                    // Top accent border (2px line) for left pane
+                    // Top accent border (2px line, offset 1px down to stay inside viewport)
                     painter.line_segment(
-                        [left_rect.left_top(), left_rect.right_top()],
+                        [egui::pos2(left_rect.left(), vp.top() + 1.0), egui::pos2(left_rect.right(), vp.top() + 1.0)],
                         egui::Stroke::new(2.0, active_color),
                     );
-                    // Side + bottom of left pane
+                    // Side borders of left pane
                     painter.line_segment(
                         [left_rect.left_top(), left_rect.left_bottom()],
                         border_stroke,
@@ -1039,10 +1124,10 @@ impl UiRenderer {
                         border_stroke,
                     );
 
-                    // Right pane border
+                    // Right pane border (inset by half stroke)
                     let right_rect = egui::Rect::from_min_max(
-                        egui::pos2(divider_x + half_gap, vp.top()),
-                        egui::pos2(vp.right(), vp.bottom()),
+                        egui::pos2(divider_x + half_gap + 0.5, vp.top()),
+                        egui::pos2(vp.right() - 0.5, vp.bottom()),
                     );
                     let partner_color = tab_manager.split_partner_id
                         .and_then(|id| files.files.iter().find(|f| f.id == id))
@@ -1051,9 +1136,9 @@ impl UiRenderer {
                             (f.color.b * 255.0) as u8, (f.color.a * 255.0) as u8,
                         ))
                         .unwrap_or(t.accent);
-                    // Top accent border (2px line) for right pane
+                    // Top accent border (2px line, offset 1px down)
                     painter.line_segment(
-                        [right_rect.left_top(), right_rect.right_top()],
+                        [egui::pos2(right_rect.left(), vp.top() + 1.0), egui::pos2(right_rect.right(), vp.top() + 1.0)],
                         egui::Stroke::new(2.0, partner_color),
                     );
                     painter.line_segment(
@@ -1066,6 +1151,7 @@ impl UiRenderer {
                     );
                 } else {
                     // Single-pane: draw top accent border across the full canvas
+                    // Offset 1px down so the 2px stroke stays inside the viewport
                     let vp = regions.viewport;
                     let active_color = tab_manager.active_tab_id
                         .and_then(|id| files.files.iter().find(|f| f.id == id))
@@ -1075,7 +1161,7 @@ impl UiRenderer {
                         ))
                         .unwrap_or(t.accent);
                     painter.line_segment(
-                        [vp.left_top(), egui::pos2(vp.right(), vp.top())],
+                        [egui::pos2(vp.left(), vp.top() + 1.0), egui::pos2(vp.right(), vp.top() + 1.0)],
                         egui::Stroke::new(2.0, active_color),
                     );
                 }
@@ -1215,12 +1301,16 @@ impl UiRenderer {
                     &mut self.state.dark_palette_id,
                     self.state.system_is_dark,
                     &self.state.active_palette,
+                    &mut self.state.canvas_settings,
                 );
                 if prefs_out.changed {
                     if let Some(new_pal) = prefs_out.palette {
                         self.state.active_palette = new_pal;
                         self.state.theme_changed = true;
                     }
+                }
+                if prefs_out.canvas_changed {
+                    self.state.canvas_changed = true;
                 }
             }
 
@@ -1385,6 +1475,7 @@ impl UiRenderer {
             vector_index: self.state.current_vector_index,
             vector_view_playing: self.state.vector_view_playing,
             theme_changed: self.state.theme_changed,
+            canvas_changed: self.state.canvas_changed,
             active_palette: self.state.active_palette.clone(),
             view_mode: self.state.view_mode,
             active_tab_file: self.state.active_tab_file,
@@ -1393,10 +1484,26 @@ impl UiRenderer {
             close_tab: close_tab_action,
             split_partner_changed,
             drag_to_split,
+            overlay_toggle,
+            overlay_select_all,
+            overlay_select_only,
+            close_others,
+            close_all,
+            show_in_split,
+            split_right_switch,
+            reorder_tab,
+            split_sync_toggled,
+            viewport_rect: regions.viewport,
+            sidebar_total_width: regions.sidebar.total_width,
+            bottom_bar_height: regions.status_bar.height
+                + regions.vector_player.as_ref().map(|vp| vp.height).unwrap_or(0.0),
+            header_height: TOOLBAR_BOTTOM
+                + if flags.has_tab_bar { TAB_BAR_HEIGHT } else { 0.0 },
         };
 
-        // Clear the one-shot flag
+        // Clear the one-shot flags
         self.state.theme_changed = false;
+        self.state.canvas_changed = false;
 
         output
     }

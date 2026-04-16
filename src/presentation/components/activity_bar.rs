@@ -2,9 +2,12 @@
 //!
 //! VS Code–style vertical icon strip on the left edge of the window.
 //! Always visible (even when the sidebar content panel is collapsed).
-//! Each icon represents a sidebar tab (Parts, Color Map, etc.).
+//! Each icon represents a sidebar tab (Toolpaths, Parameter Legend, etc.).
 //! Clicking the active tab toggles the content panel; clicking an
 //! inactive tab switches to it and opens the content panel.
+//!
+//! Tab list is data-driven — adding a new tab is a single-line addition
+//! to the `SIDEBAR_TABS` array.
 
 use egui::{Color32, Context, Rounding, Stroke, Vec2, RichText};
 use lucide_icons::Icon as LucideIcon;
@@ -12,6 +15,19 @@ use lucide_icons::Icon as LucideIcon;
 use crate::presentation::layout::ACTIVITY_BAR_WIDTH;
 use crate::presentation::theme;
 use crate::presentation::ui::SidebarTab;
+
+/// Metadata for a sidebar tab rendered in the activity bar.
+struct SidebarTabInfo {
+    tab: SidebarTab,
+    icon: LucideIcon,
+    tooltip: &'static str,
+}
+
+/// Registry of all sidebar tabs. Add new tabs here.
+const SIDEBAR_TABS: &[SidebarTabInfo] = &[
+    SidebarTabInfo { tab: SidebarTab::Toolpaths, icon: LucideIcon::Files, tooltip: "Toolpaths" },
+    SidebarTabInfo { tab: SidebarTab::ParameterLegend, icon: LucideIcon::Palette, tooltip: "Parameter Legend" },
+];
 
 /// Output from the activity bar component
 #[derive(Debug, Clone, Default)]
@@ -60,13 +76,8 @@ pub fn show_activity_bar(
             ui.add_space(4.0);
 
             ui.vertical_centered(|ui| {
-                let tabs: [(SidebarTab, LucideIcon, &str); 2] = [
-                    (SidebarTab::Parts, LucideIcon::Files, "Parts"),
-                    (SidebarTab::ColorMap, LucideIcon::Palette, "Color Map"),
-                ];
-
-                for (tab, icon, tooltip) in &tabs {
-                    let is_active = *tab == active_tab && sidebar_open;
+                for info in SIDEBAR_TABS {
+                    let is_active = info.tab == active_tab && sidebar_open;
 
                     // Button fill: active gets subtle highlight
                     let btn_fill = if is_active {
@@ -87,7 +98,7 @@ pub fn show_activity_bar(
                         t.text_secondary
                     };
 
-                    let icon_str = icon.unicode().to_string();
+                    let icon_str = info.icon.unicode().to_string();
                     let btn = egui::Button::new(
                         RichText::new(icon_str)
                             .size(18.0)
@@ -97,7 +108,7 @@ pub fn show_activity_bar(
                     .rounding(Rounding::same(6.0))
                     .min_size(Vec2::new(ACTIVITY_BAR_WIDTH - 10.0, 38.0));
 
-                    let response = ui.add(btn).on_hover_text(*tooltip);
+                    let response = ui.add(btn).on_hover_text(info.tooltip);
 
                     // Active indicator — left accent border (VS Code style)
                     if is_active {
@@ -114,7 +125,7 @@ pub fn show_activity_bar(
                     }
 
                     if response.clicked() {
-                        output.clicked_tab = Some(*tab);
+                        output.clicked_tab = Some(info.tab);
                     }
 
                     ui.add_space(2.0);

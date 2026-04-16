@@ -58,10 +58,13 @@ impl GridRenderer {
             viewport_height,
             Color::new(0.0, 0.0, 0.0, 0.08),
             Color::new(0.0, 0.0, 0.0, 0.20),
+            1.0,
+            1.5,
+            1.0,
         );
     }
 
-    /// Prepare grid geometry with custom minor/major colors.
+    /// Prepare grid geometry with custom minor/major colors and line widths.
     pub fn prepare_with_colors(
         &mut self,
         view: &ViewState,
@@ -69,9 +72,15 @@ impl GridRenderer {
         viewport_height: f32,
         minor_color: Color,
         major_color: Color,
+        minor_line_width: f32,
+        major_line_width: f32,
+        opacity: f32,
     ) {
         self.major_batch.clear();
         self.minor_batch.clear();
+
+        let minor_color = minor_color.with_alpha(minor_color.a * opacity);
+        let major_color = major_color.with_alpha(major_color.a * opacity);
 
         let (minor_spacing, major_spacing) = pick_grid_spacing(view.zoom);
         let (vis_min, vis_max) = view.visible_bounds(viewport_width, viewport_height);
@@ -140,8 +149,8 @@ impl GridRenderer {
             }
         }
 
-        self.minor_batch.set_line_width(1.0);
-        self.major_batch.set_line_width(1.5);
+        self.minor_batch.set_line_width(minor_line_width);
+        self.major_batch.set_line_width(major_line_width);
     }
 
     /// Render the grid. Must be called after prepare() and with shader/projection already set.

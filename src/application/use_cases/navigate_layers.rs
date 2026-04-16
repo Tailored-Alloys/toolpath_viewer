@@ -29,6 +29,7 @@ impl Default for LayerNavigationState {
 }
 
 /// Use case for navigating between layers
+#[derive(Clone)]
 pub struct NavigateLayersUseCase {
     state: LayerNavigationState,
 }

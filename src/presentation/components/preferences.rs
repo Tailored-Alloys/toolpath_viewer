@@ -6,7 +6,7 @@
 
 use egui::{Color32, Context, RichText, Rounding, Stroke, Vec2};
 
-use crate::application::ports::{PaletteId, ThemeMode, ALL_PALETTE_IDS};
+use crate::application::ports::{CanvasConfig, PaletteId, ThemeMode, ALL_PALETTE_IDS};
 use crate::presentation::palette::{
     self, ResolvedMode, ThemePalette, resolve_mode, resolve_palette,
 };
@@ -19,6 +19,8 @@ pub struct PreferencesOutput {
     pub changed: bool,
     /// Updated palette (if changed).
     pub palette: Option<ThemePalette>,
+    /// Whether canvas settings were changed this frame.
+    pub canvas_changed: bool,
 }
 
 /// Which tab is selected.
@@ -26,6 +28,7 @@ pub struct PreferencesOutput {
 enum Tab {
     Appearance,
     Palette,
+    Canvas,
 }
 
 /// Render the preferences dialog.  Returns info about changes.
@@ -38,6 +41,7 @@ pub fn show_preferences(
     dark_palette_id: &mut PaletteId,
     system_is_dark: bool,
     current_palette: &ThemePalette,
+    canvas_settings: &mut CanvasConfig,
 ) -> PreferencesOutput {
     let mut output = PreferencesOutput::default();
     let t = theme::active();
@@ -66,6 +70,9 @@ pub fn show_preferences(
                 if tab_button(ui, "Color Palette", selected_tab == Tab::Palette, &t) {
                     selected_tab = Tab::Palette;
                 }
+                if tab_button(ui, "Canvas", selected_tab == Tab::Canvas, &t) {
+                    selected_tab = Tab::Canvas;
+                }
             });
             ui.separator();
             ui.add_space(8.0);
@@ -76,6 +83,10 @@ pub fn show_preferences(
                 }
                 Tab::Palette => {
                     output = palette_tab(ui, theme_mode, palette_id, light_palette_id, dark_palette_id, system_is_dark, current_palette, &t);
+                }
+                Tab::Canvas => {
+                    let changed = canvas_tab(ui, canvas_settings, &t);
+                    output.canvas_changed = changed;
                 }
             }
         });
@@ -279,4 +290,112 @@ fn palette_tab(
     }
 
     output
+}
+
+// ── Canvas tab ───────────────────────────────────────────────────────────
+
+/// Section header helper.
+fn section_header(ui: &mut egui::Ui, label: &str, t: &theme::ActiveTheme) {
+    ui.label(RichText::new(label).size(13.0).strong().color(t.text_primary));
+    ui.add_space(4.0);
+}
+
+/// Labeled slider row returning true if value changed.
+fn slider_row(ui: &mut egui::Ui, label: &str, value: &mut f32, range: std::ops::RangeInclusive<f32>, t: &theme::ActiveTheme) -> bool {
+    let before = *value;
+    ui.horizontal(|ui| {
+        ui.label(RichText::new(label).size(11.0).color(t.text_secondary));
+        ui.add(
+            egui::DragValue::new(value)
+                .speed(0.01)
+                .clamp_range(range)
+                .max_decimals(2),
+        );
+    });
+    (*value - before).abs() > f32::EPSILON
+}
+
+/// Render the Canvas settings tab.  Returns `true` if any setting changed.
+fn canvas_tab(
+    ui: &mut egui::Ui,
+    cfg: &mut CanvasConfig,
+    t: &theme::ActiveTheme,
+) -> bool {
+    let mut changed = false;
+
+    egui::ScrollArea::vertical().max_height(420.0).show(ui, |ui| {
+        // ── Line Thickness ──
+        section_header(ui, "Line Thickness", t);
+        changed |= slider_row(ui, "Base line width", &mut cfg.line_width, 0.5..=5.0, t);
+        changed |= slider_row(ui, "Boundary multiplier", &mut cfg.boundary_width_multiplier, 0.1..=3.0, t);
+        changed |= slider_row(ui, "Contour multiplier", &mut cfg.contour_width_multiplier, 0.1..=3.0, t);
+        changed |= slider_row(ui, "Hatch multiplier", &mut cfg.hatch_width_multiplier, 0.1..=3.0, t);
+
+        ui.add_space(8.0);
+        ui.separator();
+        ui.add_space(8.0);
+
+        // ── Markers ──
+        section_header(ui, "Markers", t);
+        changed |= slider_row(ui, "Arrow size", &mut cfg.arrow_size_multiplier, 0.2..=3.0, t);
+        changed |= slider_row(ui, "Wait dot size", &mut cfg.wait_marker_size_multiplier, 0.2..=3.0, t);
+
+        ui.add_space(8.0);
+        ui.separator();
+        ui.add_space(8.0);
+
+        // ── Vector Display ──
+        section_header(ui, "Vector Display", t);
+        changed |= slider_row(ui, "Future vector alpha", &mut cfg.future_vector_alpha, 0.0..=1.0, t);
+        {
+            let before = cfg.show_direction_gradient;
+            ui.horizontal(|ui| {
+                ui.checkbox(&mut cfg.show_direction_gradient,
+                    RichText::new("Direction gradient").size(11.0).color(t.text_secondary));
+            });
+            if cfg.show_direction_gradient != before {
+                changed = true;
+            }
+        }
+
+        ui.add_space(8.0);
+        ui.separator();
+        ui.add_space(8.0);
+
+        // ── Grid ──
+        section_header(ui, "Grid", t);
+        changed |= slider_row(ui, "Minor line width", &mut cfg.grid_line_width_minor, 0.5..=3.0, t);
+        changed |= slider_row(ui, "Major line width", &mut cfg.grid_line_width_major, 0.5..=3.0, t);
+        changed |= slider_row(ui, "Grid opacity", &mut cfg.grid_opacity, 0.0..=1.0, t);
+
+        ui.add_space(8.0);
+        ui.separator();
+        ui.add_space(8.0);
+
+        // ── Quality ──
+        section_header(ui, "Quality", t);
+        {
+            let before = cfg.antialiasing;
+            ui.horizontal(|ui| {
+                ui.checkbox(&mut cfg.antialiasing,
+                    RichText::new("Anti-aliasing (line smoothing)").size(11.0).color(t.text_secondary));
+            });
+            if cfg.antialiasing != before {
+                changed = true;
+            }
+        }
+
+        ui.add_space(12.0);
+
+        // ── Reset to defaults ──
+        if ui.add(
+            egui::Button::new(RichText::new("Reset to Defaults").size(11.0))
+                .rounding(Rounding::same(4.0))
+        ).clicked() {
+            *cfg = CanvasConfig::default();
+            changed = true;
+        }
+    });
+
+    changed
 }
