@@ -36,6 +36,21 @@ impl Default for SidebarTab {
     }
 }
 
+// ── Split Pane ────────────────────────────────────────────────────────────
+
+/// Which pane the cursor is currently over (in Split mode).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SplitPane {
+    Left,
+    Right,
+}
+
+impl Default for SplitPane {
+    fn default() -> Self {
+        SplitPane::Left
+    }
+}
+
 // ── Tool Mode types ───────────────────────────────────────────────────────
 
 /// Active tool mode
@@ -358,6 +373,8 @@ pub struct UiState {
     pub canvas_settings: crate::application::ports::CanvasConfig,
     /// Flag to request focus on the "Go to layer" input field (consumed by layer_slider)
     pub focus_layer_input: bool,
+    /// Which split pane the mouse is currently over (Split mode only)
+    pub active_split_pane: SplitPane,
 }
 
 impl Default for UiState {
@@ -408,7 +425,7 @@ impl Default for UiState {
             theme_changed: false,
             canvas_changed: false,
             has_multiple_files: false,
-            view_mode: ViewMode::Overlay,
+            view_mode: ViewMode::Tab,
             active_tab_file: None,
             split_ratio: 0.5,
             mouse_world_pos: None,
@@ -417,6 +434,7 @@ impl Default for UiState {
             cached_viewport_rect: egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(100.0, 100.0)),
             canvas_settings: crate::application::ports::CanvasConfig::default(),
             focus_layer_input: false,
+            active_split_pane: SplitPane::default(),
         }
     }
 }
@@ -776,6 +794,7 @@ impl UiRenderer {
                     tab_bar_split_right_active,
                     &tab_bar_overlay_visible,
                     self.state.split_ratio,
+                    regions.viewport.width(),
                 );
                 if tb_out.switch_to_tab.is_some() {
                     switch_tab = tb_out.switch_to_tab;
@@ -1074,99 +1093,6 @@ impl UiRenderer {
                 }
             }
 
-            // ── Active tab canvas border ──
-            // Draw a border around the canvas area that visually connects to the active tab,
-            // making it clear which canvas belongs to which tab (VS Code style).
-            if regions.tab_bar.is_some() {
-                let t = super::theme::active();
-                let border_color = if t.is_dark {
-                    egui::Color32::from_rgb(60, 60, 60)
-                } else {
-                    egui::Color32::from_rgb(200, 200, 200)
-                };
-                let border_stroke = egui::Stroke::new(1.0, border_color);
-                let painter = ctx.layer_painter(egui::LayerId::new(
-                    egui::Order::Middle,
-                    egui::Id::new("canvas_tab_border"),
-                ));
-
-                if self.state.view_mode == ViewMode::Split {
-                    let vp = regions.viewport;
-                    let divider_x = vp.left() + vp.width() * self.state.split_ratio;
-                    let half_gap = super::layout::SPLIT_GAP / 2.0;
-
-                    // Inset rects by half the stroke width to keep borders inside the viewport
-                    // Left pane border (top + sides)
-                    let left_rect = egui::Rect::from_min_max(
-                        egui::pos2(vp.left() + 0.5, vp.top()),
-                        egui::pos2(divider_x - half_gap - 0.5, vp.bottom()),
-                    );
-                    // Find the active tab's color for left pane accent
-                    let active_color = tab_manager.active_tab_id
-                        .and_then(|id| files.files.iter().find(|f| f.id == id))
-                        .map(|f| egui::Color32::from_rgba_unmultiplied(
-                            (f.color.r * 255.0) as u8, (f.color.g * 255.0) as u8,
-                            (f.color.b * 255.0) as u8, (f.color.a * 255.0) as u8,
-                        ))
-                        .unwrap_or(t.accent);
-                    // Top accent border (2px line, offset 1px down to stay inside viewport)
-                    painter.line_segment(
-                        [egui::pos2(left_rect.left(), vp.top() + 1.0), egui::pos2(left_rect.right(), vp.top() + 1.0)],
-                        egui::Stroke::new(2.0, active_color),
-                    );
-                    // Side borders of left pane
-                    painter.line_segment(
-                        [left_rect.left_top(), left_rect.left_bottom()],
-                        border_stroke,
-                    );
-                    painter.line_segment(
-                        [left_rect.right_top(), left_rect.right_bottom()],
-                        border_stroke,
-                    );
-
-                    // Right pane border (inset by half stroke)
-                    let right_rect = egui::Rect::from_min_max(
-                        egui::pos2(divider_x + half_gap + 0.5, vp.top()),
-                        egui::pos2(vp.right() - 0.5, vp.bottom()),
-                    );
-                    let partner_color = tab_manager.split_partner_id
-                        .and_then(|id| files.files.iter().find(|f| f.id == id))
-                        .map(|f| egui::Color32::from_rgba_unmultiplied(
-                            (f.color.r * 255.0) as u8, (f.color.g * 255.0) as u8,
-                            (f.color.b * 255.0) as u8, (f.color.a * 255.0) as u8,
-                        ))
-                        .unwrap_or(t.accent);
-                    // Top accent border (2px line, offset 1px down)
-                    painter.line_segment(
-                        [egui::pos2(right_rect.left(), vp.top() + 1.0), egui::pos2(right_rect.right(), vp.top() + 1.0)],
-                        egui::Stroke::new(2.0, partner_color),
-                    );
-                    painter.line_segment(
-                        [right_rect.left_top(), right_rect.left_bottom()],
-                        border_stroke,
-                    );
-                    painter.line_segment(
-                        [right_rect.right_top(), right_rect.right_bottom()],
-                        border_stroke,
-                    );
-                } else {
-                    // Single-pane: draw top accent border across the full canvas
-                    // Offset 1px down so the 2px stroke stays inside the viewport
-                    let vp = regions.viewport;
-                    let active_color = tab_manager.active_tab_id
-                        .and_then(|id| files.files.iter().find(|f| f.id == id))
-                        .map(|f| egui::Color32::from_rgba_unmultiplied(
-                            (f.color.r * 255.0) as u8, (f.color.g * 255.0) as u8,
-                            (f.color.b * 255.0) as u8, (f.color.a * 255.0) as u8,
-                        ))
-                        .unwrap_or(t.accent);
-                    painter.line_segment(
-                        [egui::pos2(vp.left(), vp.top() + 1.0), egui::pos2(vp.right(), vp.top() + 1.0)],
-                        egui::Stroke::new(2.0, active_color),
-                    );
-                }
-            }
-
             // ── Drag-to-split drop zone indicators ──
             if let Some(_drag_id) = self.state.tab_drag_id {
                 if let Some(drag_pos) = self.state.tab_drag_pos {
@@ -1252,14 +1178,27 @@ impl UiRenderer {
                 content_top,
             );
 
-            // ── Cursor icon — custom-painted when over the viewport ──
+            // ── Cursor icon — system defaults when over the viewport ──
             if !self.ctx.wants_pointer_input() {
                 let primary_down = ctx.input(|i| i.pointer.primary_down());
-                super::cursors::draw_custom_cursor(
-                    ctx,
-                    self.state.tool_state.active_mode,
-                    primary_down,
-                );
+                let icon = match self.state.tool_state.active_mode {
+                    ToolMode::Pan => {
+                        if primary_down {
+                            egui::CursorIcon::Grabbing
+                        } else {
+                            egui::CursorIcon::Grab
+                        }
+                    }
+                    ToolMode::ZoomSelect => {
+                        if primary_down {
+                            egui::CursorIcon::ZoomIn
+                        } else {
+                            egui::CursorIcon::ZoomIn
+                        }
+                    }
+                    ToolMode::Ruler => egui::CursorIcon::Crosshair,
+                };
+                ctx.set_cursor_icon(icon);
             }
 
             if let (Some(start), Some(end)) = (
@@ -1317,15 +1256,13 @@ impl UiRenderer {
             // ── Empty state message (no file loaded) ──
             if self.state.total_layers == 0 && self.state.loading_file.is_none() {
                 let t = theme::active();
-                let screen = ctx.screen_rect();
-                let center = egui::pos2(
-                    screen.center().x,
-                    (screen.top() + TOOLBAR_HEIGHT + screen.bottom()) / 2.0,
-                );
+                let center = regions.viewport.center();
                 let painter = ctx.layer_painter(egui::LayerId::new(
-                    egui::Order::Foreground,
+                    egui::Order::Background,
                     egui::Id::new("empty_state"),
                 ));
+                // Cover the GL canvas with the panel background so it is fully hidden
+                painter.rect_filled(regions.viewport, 0.0, t.panel_bg);
                 painter.text(
                     center + egui::vec2(0.0, -10.0),
                     egui::Align2::CENTER_CENTER,

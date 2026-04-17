@@ -19,7 +19,6 @@ pub mod palette;
 pub mod theme;
 pub mod components;
 mod ui;
-mod cursors;
 pub mod tab_state;
 
 pub use app::*;

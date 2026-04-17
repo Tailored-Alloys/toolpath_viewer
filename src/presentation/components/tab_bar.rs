@@ -42,6 +42,7 @@ pub struct TabBarOutput {
 
 // ── Tab info passed in ──────────────────────────────────────────────────
 
+#[derive(Clone)]
 pub struct TabInfo {
     pub file_id: usize,
     pub name: String,
@@ -73,6 +74,7 @@ pub fn show_tab_bar(
     split_right_active_id: Option<usize>,
     overlay_visible_ids: &HashSet<usize>,
     split_ratio: f32,
+    viewport_width: f32,
 ) -> TabBarOutput {
     let mut output = TabBarOutput::default();
     let t = theme::active();
@@ -87,30 +89,69 @@ pub fn show_tab_bar(
         .show(ctx, |ui| {
             // Disable default panel stroke — we draw our own border
             ui.style_mut().visuals.widgets.noninteractive.bg_stroke = Stroke::NONE;
+            // Clip children to the panel rect so tabs never paint outside the bar
+            ui.set_clip_rect(ui.max_rect());
+            ui.spacing_mut().item_spacing.y = 0.0;
 
-            ui.horizontal_centered(|ui| {
+            ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 0.0;
 
-                let available_w = tab_bar_rect.width();
+                let available_w = ui.available_width();
                 let mode_toggle_width = if has_multiple_files { 110.0 } else { 0.0 };
 
                 match view_mode {
                     ViewMode::Split if has_multiple_files => {
-                        let tabs_area_w = (available_w - mode_toggle_width - 8.0).max(60.0);
+                        // Compute left_w from viewport width so the tab bar divider
+                        // aligns exactly with the canvas split divider.
                         let divider_w = 1.0;
-                        let left_w = (tabs_area_w * split_ratio - divider_w / 2.0).max(30.0);
-                        let right_w = (tabs_area_w - left_w - divider_w).max(30.0);
+                        let left_w = (viewport_width * split_ratio - divider_w / 2.0).max(30.0);
+                        let right_w = (available_w - left_w - divider_w).max(30.0);
                         let right_active = split_right_active_id.or(split_partner_id);
 
-                        draw_tab_strip(ui, tabs, &t, left_w, TabStripMode::SplitLeft, overlay_visible_ids, &mut output);
+                        // Partition tabs: right pane gets its active file, left pane gets the rest
+                        let (left_tabs, right_tabs): (Vec<&TabInfo>, Vec<&TabInfo>) =
+                            tabs.iter().partition(|tab| Some(tab.file_id) != right_active);
+                        let left_owned: Vec<TabInfo> = left_tabs.into_iter().cloned().collect();
+                        let right_owned: Vec<TabInfo> = right_tabs.into_iter().cloned().collect();
 
+                        // ── Left split zone: fixed width, left-aligned tabs ──
+                        let (left_rect, _) = ui.allocate_exact_size(
+                            Vec2::new(left_w, TAB_BAR_HEIGHT),
+                            egui::Sense::hover(),
+                        );
+                        // Subtle background tint for left zone
+                        let left_bg = if t.is_dark {
+                            Color32::from_rgba_unmultiplied(255, 255, 255, 4)
+                        } else {
+                            Color32::from_rgba_unmultiplied(0, 0, 0, 4)
+                        };
+                        ui.painter().rect_filled(left_rect, Rounding::ZERO, left_bg);
+                        let mut left_ui = ui.child_ui(left_rect, egui::Layout::left_to_right(egui::Align::Min));
+                        left_ui.spacing_mut().item_spacing.x = 0.0;
+                        draw_tab_strip(&mut left_ui, &left_owned, &t, left_w, TabStripMode::SplitLeft, overlay_visible_ids, &mut output);
+
+                        // ── Divider ──
                         let (div_rect, _) = ui.allocate_exact_size(Vec2::new(divider_w, TAB_BAR_HEIGHT), egui::Sense::hover());
                         ui.painter().line_segment(
                             [div_rect.center_top(), div_rect.center_bottom()],
                             Stroke::new(1.0, t.toolbar_border),
                         );
 
-                        draw_tab_strip(ui, tabs, &t, right_w, TabStripMode::SplitRight { active_id: right_active }, overlay_visible_ids, &mut output);
+                        // ── Right split zone: fixed width, left-aligned tab ──
+                        let (right_rect, _) = ui.allocate_exact_size(
+                            Vec2::new(right_w, TAB_BAR_HEIGHT),
+                            egui::Sense::hover(),
+                        );
+                        // Slightly different background tint for right zone
+                        let right_bg = if t.is_dark {
+                            Color32::from_rgba_unmultiplied(255, 255, 255, 8)
+                        } else {
+                            Color32::from_rgba_unmultiplied(0, 0, 0, 8)
+                        };
+                        ui.painter().rect_filled(right_rect, Rounding::ZERO, right_bg);
+                        let mut right_ui = ui.child_ui(right_rect, egui::Layout::left_to_right(egui::Align::Min));
+                        right_ui.spacing_mut().item_spacing.x = 0.0;
+                        draw_tab_strip(&mut right_ui, &right_owned, &t, right_w, TabStripMode::SplitRight { active_id: right_active }, overlay_visible_ids, &mut output);
                     }
                     ViewMode::Overlay if has_multiple_files => {
                         let tabs_w = (available_w - mode_toggle_width - 16.0).max(60.0);

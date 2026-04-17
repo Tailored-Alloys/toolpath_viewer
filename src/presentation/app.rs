@@ -25,7 +25,7 @@ use crate::infrastructure::rendering::GlRenderer;
 use crate::presentation::{
     AppEvent, AppWindow, InputAction, MouseButton, ParamRanges, WindowConfig,
     create_window, run_event_loop, UiRenderer, ToolMode,
-    RulerMeasurement, SnapshotFormat, TabManager,
+    RulerMeasurement, SnapshotFormat, TabManager, SplitPane,
 };
 use crate::presentation::palette::{self, ResolvedMode, ThemePalette, resolve_mode, resolve_palette};
 
@@ -525,14 +525,44 @@ fn handle_event(
             if pointer_in_viewport {
                 let mouse = &window.input_state.mouse_pos;
                 let vp = ui.state.cached_viewport_rect;
-                let vp_w = vp.width();
-                let vp_h = vp.height();
+
+                // ── Split-pane aware viewport + view state selection ──
+                let is_split = ui.state.view_mode == ViewMode::Split;
+                let pane_hit = if is_split {
+                    detect_split_pane(mouse.x, vp, ui.state.split_ratio)
+                } else {
+                    None
+                };
+
+                // Effective viewport rect and view state for the pane under the cursor
+                let (eff_vp, use_right) = if let Some(ref hit) = pane_hit {
+                    ui.state.active_split_pane = hit.pane;
+                    (hit.pane_rect, hit.pane == SplitPane::Right)
+                } else if is_split {
+                    // Cursor is in the divider gap — skip interaction
+                    ui.state.hover_info = None;
+                    ui.state.mouse_world_pos = None;
+                    return false;
+                } else {
+                    (vp, false)
+                };
+                let eff_w = eff_vp.width();
+                let eff_h = eff_vp.height();
+
+                // Pick the correct view state (right pane uses independent state when unsynced)
+                let use_right_independent = use_right && !state.tab_manager.split_cameras_synced;
+                let view_state_for_read = if use_right_independent {
+                    state.tab_manager.split_right_view_state.clone()
+                        .unwrap_or_else(|| state.render.view_state.clone())
+                } else {
+                    state.render.view_state.clone()
+                };
 
                 // Track world position for status bar
-                let viewport_mouse_x = mouse.x - vp.left();
-                let viewport_mouse_y = mouse.y - vp.top();
-                let world_pos = state.render.view_state.screen_to_world(
-                    viewport_mouse_x, viewport_mouse_y, vp_w, vp_h,
+                let viewport_mouse_x = mouse.x - eff_vp.left();
+                let viewport_mouse_y = mouse.y - eff_vp.top();
+                let world_pos = view_state_for_read.screen_to_world(
+                    viewport_mouse_x, viewport_mouse_y, eff_w, eff_h,
                 );
                 ui.state.mouse_world_pos = Some((world_pos.x, world_pos.y));
 
@@ -541,7 +571,13 @@ fn handle_event(
                     match ui.state.tool_state.active_mode {
                         ToolMode::Pan => {
                             let delta = window.input_state.mouse_delta();
-                            state.render.pan(delta.x, -delta.y);
+                            if use_right_independent {
+                                if let Some(ref mut rv) = state.tab_manager.split_right_view_state {
+                                    rv.pan(delta.x, -delta.y);
+                                }
+                            } else {
+                                state.render.pan(delta.x, -delta.y);
+                            }
                             state.needs_redraw = true;
                             ui.state.hover_info = None;
                         }
@@ -565,7 +601,13 @@ fn handle_event(
                 // Middle-drag: always pan (regardless of tool mode)
                 else if window.input_state.middle_pressed {
                     let delta = window.input_state.mouse_delta();
-                    state.render.pan(delta.x, -delta.y);
+                    if use_right_independent {
+                        if let Some(ref mut rv) = state.tab_manager.split_right_view_state {
+                            rv.pan(delta.x, -delta.y);
+                        }
+                    } else {
+                        state.render.pan(delta.x, -delta.y);
+                    }
                     state.needs_redraw = true;
                     ui.state.hover_info = None;
                     window.request_redraw();
@@ -589,8 +631,33 @@ fn handle_event(
             if pointer_in_viewport {
                 let mouse = &window.input_state.mouse_pos;
                 let vp = ui.state.cached_viewport_rect;
-                let vp_w = vp.width();
-                let vp_h = vp.height();
+
+                // ── Split-pane aware viewport + view state selection ──
+                let is_split = ui.state.view_mode == ViewMode::Split;
+                let pane_hit = if is_split {
+                    detect_split_pane(mouse.x, vp, ui.state.split_ratio)
+                } else {
+                    None
+                };
+                let (eff_vp, use_right) = if let Some(ref hit) = pane_hit {
+                    ui.state.active_split_pane = hit.pane;
+                    (hit.pane_rect, hit.pane == SplitPane::Right)
+                } else if is_split {
+                    return false; // cursor in divider gap
+                } else {
+                    (vp, false)
+                };
+                let eff_w = eff_vp.width();
+                let eff_h = eff_vp.height();
+                let use_right_independent = use_right && !state.tab_manager.split_cameras_synced;
+
+                // Reference clone of the view state for coordinate conversion
+                let view_ref = if use_right_independent {
+                    state.tab_manager.split_right_view_state.clone()
+                        .unwrap_or_else(|| state.render.view_state.clone())
+                } else {
+                    state.render.view_state.clone()
+                };
 
                 match button {
                     // Left button: behavior depends on active tool mode
@@ -605,12 +672,12 @@ fn handle_event(
                             }
                             ToolMode::Ruler => {
                                 // Ruler click: place or complete measurement
-                                let viewport_mouse_x = mouse.x - vp.left();
-                                let viewport_mouse_y = mouse.y - vp.top();
-                                let world = state.render.view_state.screen_to_world(
-                                    viewport_mouse_x, viewport_mouse_y, vp_w, vp_h,
+                                let viewport_mouse_x = mouse.x - eff_vp.left();
+                                let viewport_mouse_y = mouse.y - eff_vp.top();
+                                let world = view_ref.screen_to_world(
+                                    viewport_mouse_x, viewport_mouse_y, eff_w, eff_h,
                                 );
-                                place_ruler_point(ui, &state.render.view_state, world);
+                                place_ruler_point(ui, &view_ref, world);
                             }
                         }
                         window.request_redraw();
@@ -626,18 +693,24 @@ fn handle_event(
                                     let dx = (end.x - start.x).abs();
                                     let dy = (end.y - start.y).abs();
                                     if dx > 5.0 && dy > 5.0 {
-                                        let w1 = state.render.view_state.screen_to_world(
-                                            start.x - vp.left(), start.y - vp.top(), vp_w, vp_h,
+                                        let w1 = view_ref.screen_to_world(
+                                            start.x - eff_vp.left(), start.y - eff_vp.top(), eff_w, eff_h,
                                         );
-                                        let w2 = state.render.view_state.screen_to_world(
-                                            end.x - vp.left(), end.y - vp.top(), vp_w, vp_h,
+                                        let w2 = view_ref.screen_to_world(
+                                            end.x - eff_vp.left(), end.y - eff_vp.top(), eff_w, eff_h,
                                         );
 
                                         let bounds = Bounds2D::new(
                                             Point2D::new(w1.x.min(w2.x), w1.y.min(w2.y)),
                                             Point2D::new(w1.x.max(w2.x), w1.y.max(w2.y)),
                                         );
-                                        state.render.view_state.fit_to_bounds(&bounds, vp_w, vp_h);
+                                        if use_right_independent {
+                                            if let Some(ref mut rv) = state.tab_manager.split_right_view_state {
+                                                rv.fit_to_bounds(&bounds, eff_w, eff_h);
+                                            }
+                                        } else {
+                                            state.render.view_state.fit_to_bounds(&bounds, eff_w, eff_h);
+                                        }
                                         state.needs_redraw = true;
                                     }
                                     window.request_redraw();
@@ -648,13 +721,13 @@ fn handle_event(
                     }
                     // Right button click: always ruler (add/remove measurement point)
                     MouseButton::Right if pressed => {
-                        let viewport_mouse_x = mouse.x - vp.left();
-                        let viewport_mouse_y = mouse.y - vp.top();
-                        let world = state.render.view_state.screen_to_world(
-                            viewport_mouse_x, viewport_mouse_y, vp_w, vp_h,
+                        let viewport_mouse_x = mouse.x - eff_vp.left();
+                        let viewport_mouse_y = mouse.y - eff_vp.top();
+                        let world = view_ref.screen_to_world(
+                            viewport_mouse_x, viewport_mouse_y, eff_w, eff_h,
                         );
 
-                        place_ruler_point(ui, &state.render.view_state, world);
+                        place_ruler_point(ui, &view_ref, world);
                         window.request_redraw();
                     }
                     _ => {}
@@ -666,21 +739,49 @@ fn handle_event(
             // Handle zoom only when pointer is in viewport
             if pointer_in_viewport {
                 let vp = ui.state.cached_viewport_rect;
-                let vp_w = vp.width();
-                let vp_h = vp.height();
                 let zoom_factor = if delta > 0.0 { 1.1 } else { 0.9 };
                 let mouse = &window.input_state.mouse_pos;
-                
-                let viewport_mouse_x = mouse.x - vp.left();
-                let viewport_mouse_y = mouse.y - vp.top();
-                
-                state.render.zoom(
-                    zoom_factor,
-                    viewport_mouse_x,
-                    vp_h - viewport_mouse_y, // Flip Y
-                    vp_w,
-                    vp_h,
-                );
+
+                // ── Split-pane aware viewport + view state selection ──
+                let is_split = ui.state.view_mode == ViewMode::Split;
+                let pane_hit = if is_split {
+                    detect_split_pane(mouse.x, vp, ui.state.split_ratio)
+                } else {
+                    None
+                };
+                let (eff_vp, use_right) = if let Some(ref hit) = pane_hit {
+                    (hit.pane_rect, hit.pane == SplitPane::Right)
+                } else if is_split {
+                    return false; // cursor in divider gap
+                } else {
+                    (vp, false)
+                };
+                let eff_w = eff_vp.width();
+                let eff_h = eff_vp.height();
+                let use_right_independent = use_right && !state.tab_manager.split_cameras_synced;
+
+                let viewport_mouse_x = mouse.x - eff_vp.left();
+                let viewport_mouse_y = mouse.y - eff_vp.top();
+
+                if use_right_independent {
+                    if let Some(ref mut rv) = state.tab_manager.split_right_view_state {
+                        rv.zoom_at(
+                            zoom_factor,
+                            viewport_mouse_x,
+                            eff_h - viewport_mouse_y, // Flip Y
+                            eff_w,
+                            eff_h,
+                        );
+                    }
+                } else {
+                    state.render.zoom(
+                        zoom_factor,
+                        viewport_mouse_x,
+                        eff_h - viewport_mouse_y, // Flip Y
+                        eff_w,
+                        eff_h,
+                    );
+                }
                 state.needs_redraw = true;
                 window.request_redraw();
             }
@@ -1014,6 +1115,9 @@ fn handle_key_action(
                 state.tab_manager.close_tab(close_id);
                 ui.state.active_tab_file = state.tab_manager.active_tab_id;
                 ui.state.has_multiple_files = state.tab_manager.tab_count() > 1;
+                if state.tab_manager.open_tab_ids.len() < 2 && ui.state.view_mode == ViewMode::Split {
+                    ui.state.view_mode = ViewMode::Tab;
+                }
                 let z_heights = state.files.merged_z_heights();
                 state.navigation.initialize_from_z_heights(z_heights);
                 ui.state.param_ranges = state.files.merged_param_ranges();
@@ -1114,8 +1218,7 @@ fn handle_key_action(
 
         InputAction::FocusLeftPane => {
             if ui.state.view_mode == ViewMode::Split {
-                // Focus left pane = make active tab the focused one (already is by default)
-                // Clear right-pane focus indicator
+                ui.state.active_split_pane = SplitPane::Left;
                 state.needs_redraw = true;
                 window.request_redraw();
             }
@@ -1123,7 +1226,7 @@ fn handle_key_action(
 
         InputAction::FocusRightPane => {
             if ui.state.view_mode == ViewMode::Split {
-                // Focus right pane
+                ui.state.active_split_pane = SplitPane::Right;
                 state.needs_redraw = true;
                 window.request_redraw();
             }
@@ -1255,6 +1358,19 @@ fn render_frame(
 
     // ── Handle tab bar actions ──
     if let Some(switch_id) = ui_output.switch_tab {
+        // Reopen the tab if it was closed (e.g. user clicked file in sidebar)
+        if !state.tab_manager.open_tab_ids.contains(&switch_id) {
+            state.tab_manager.reopen_tab(switch_id);
+            // Restore file visibility (close_tab sets it invisible)
+            if let Some(f) = state.files.files.iter_mut().find(|f| f.id == switch_id) {
+                f.visible = true;
+            }
+            // Re-merge navigation for the now-visible file
+            let z_heights = state.files.merged_z_heights();
+            state.navigation.initialize_from_z_heights(z_heights);
+            ui.state.param_ranges = state.files.merged_param_ranges();
+            ui.state.has_multiple_files = state.tab_manager.tab_count() > 1;
+        }
         state.tab_manager.set_active(switch_id);
         ui.state.active_tab_file = Some(switch_id);
         state.needs_redraw = true;
@@ -1264,6 +1380,9 @@ fn render_frame(
         state.tab_manager.close_tab(close_id);
         ui.state.active_tab_file = state.tab_manager.active_tab_id;
         ui.state.has_multiple_files = state.tab_manager.tab_count() > 1;
+        if state.tab_manager.open_tab_ids.len() < 2 && ui.state.view_mode == ViewMode::Split {
+            ui.state.view_mode = ViewMode::Tab;
+        }
         // Re-initialize global navigation from merged Z-heights of remaining visible files
         let z_heights = state.files.merged_z_heights();
         state.navigation.initialize_from_z_heights(z_heights);
@@ -1313,6 +1432,9 @@ fn render_frame(
         state.tab_manager.set_active(keep_id);
         ui.state.active_tab_file = Some(keep_id);
         ui.state.has_multiple_files = state.tab_manager.tab_count() > 1;
+        if state.tab_manager.open_tab_ids.len() < 2 && ui.state.view_mode == ViewMode::Split {
+            ui.state.view_mode = ViewMode::Tab;
+        }
         let z_heights = state.files.merged_z_heights();
         state.navigation.initialize_from_z_heights(z_heights);
         ui.state.param_ranges = state.files.merged_param_ranges();
@@ -1326,6 +1448,9 @@ fn render_frame(
         }
         ui.state.active_tab_file = None;
         ui.state.has_multiple_files = false;
+        if ui.state.view_mode == ViewMode::Split {
+            ui.state.view_mode = ViewMode::Tab;
+        }
         let z_heights = state.files.merged_z_heights();
         state.navigation.initialize_from_z_heights(z_heights);
         ui.state.param_ranges = state.files.merged_param_ranges();
@@ -1366,6 +1491,9 @@ fn render_frame(
         let z_heights = state.files.merged_z_heights();
         state.navigation.initialize_from_z_heights(z_heights);
         ui.state.has_multiple_files = state.tab_manager.tab_count() > 1;
+        if state.tab_manager.open_tab_ids.len() < 2 && ui.state.view_mode == ViewMode::Split {
+            ui.state.view_mode = ViewMode::Tab;
+        }
         ui.state.param_ranges = state.files.merged_param_ranges();
         // Reset active tab if the removed file was active
         ui.state.active_tab_file = state.tab_manager.active_tab_id;
@@ -1597,6 +1725,10 @@ fn render_frame(
     // Save full viewport size for split mode restoration
     let (full_phys_w, full_phys_h) = renderer.viewport_size();
 
+    // Only render canvas content (grid + layers) when files are open
+    let has_open_files = !state.tab_manager.open_tab_ids.is_empty();
+
+    if has_open_files {
     match view_mode {
         ViewMode::Overlay => {
             // Clip GL rendering to the canvas area (excludes sidebar, toolbar, status bar, layer slider)
@@ -1818,6 +1950,7 @@ fn render_frame(
             state.render.display_options.file_color_override = None;
         }
     }
+    } // end if has_open_files
 
     ui.state.vector_counts = total_counts.clone();
 
@@ -1940,6 +2073,45 @@ fn place_ruler_point(
     }
 }
 
+/// Result of split-pane hit-testing: which pane the cursor is over, plus the
+/// pane-local viewport rect (in logical screen coords) for coordinate conversion.
+struct SplitPaneHit {
+    pane: SplitPane,
+    /// The viewport rect for this pane (logical coords, excluding the gap).
+    pane_rect: egui::Rect,
+}
+
+/// Determine which split pane the mouse is over, and return the pane-local
+/// viewport rect.  Returns `None` if the cursor is inside the divider gap.
+fn detect_split_pane(
+    mouse_x: f32,
+    viewport: egui::Rect,
+    split_ratio: f32,
+) -> Option<SplitPaneHit> {
+    let gap = super::layout::SPLIT_GAP;
+    let half_gap = gap / 2.0;
+    let divider_x = viewport.left() + viewport.width() * split_ratio;
+
+    if mouse_x < divider_x - half_gap {
+        // Left pane
+        let pane_rect = egui::Rect::from_min_max(
+            viewport.left_top(),
+            egui::pos2(divider_x - half_gap, viewport.bottom()),
+        );
+        Some(SplitPaneHit { pane: SplitPane::Left, pane_rect })
+    } else if mouse_x > divider_x + half_gap {
+        // Right pane
+        let pane_rect = egui::Rect::from_min_max(
+            egui::pos2(divider_x + half_gap, viewport.top()),
+            viewport.right_bottom(),
+        );
+        Some(SplitPaneHit { pane: SplitPane::Right, pane_rect })
+    } else {
+        // In the divider gap
+        None
+    }
+}
+
 /// Update hover tooltip info by hit-testing the nearest visible vector.
 fn update_hover_info(
     state: &AppState,
@@ -1950,22 +2122,77 @@ fn update_hover_info(
         ui.state.hover_info = None;
         return;
     }
-    let current_z = state.navigation.state().current_z;
 
     let mouse = &window.input_state.mouse_pos;
     let vp = ui.state.cached_viewport_rect;
-    let vp_w = vp.width();
-    let vp_h = vp.height();
-    let world = state.render.view_state.screen_to_world(
-        mouse.x - vp.left(), mouse.y - vp.top(), vp_w, vp_h,
+
+    // ── Split-pane aware viewport + view state selection ──
+    let is_split = ui.state.view_mode == ViewMode::Split;
+    let pane_hit = if is_split {
+        detect_split_pane(mouse.x, vp, ui.state.split_ratio)
+    } else {
+        None
+    };
+    let (eff_vp, use_right) = if let Some(ref hit) = pane_hit {
+        (hit.pane_rect, hit.pane == SplitPane::Right)
+    } else if is_split {
+        ui.state.hover_info = None;
+        return;
+    } else {
+        (vp, false)
+    };
+    let eff_w = eff_vp.width();
+    let eff_h = eff_vp.height();
+    let use_right_independent = use_right && !state.tab_manager.split_cameras_synced;
+
+    let view_ref = if use_right_independent {
+        state.tab_manager.split_right_view_state.clone()
+            .unwrap_or_else(|| state.render.view_state.clone())
+    } else {
+        state.render.view_state.clone()
+    };
+
+    let world = view_ref.screen_to_world(
+        mouse.x - eff_vp.left(), mouse.y - eff_vp.top(), eff_w, eff_h,
     );
 
     let opts = &state.render.display_options;
-    let threshold = 5.0 / state.render.view_state.zoom.max(0.001);
+    let threshold = 5.0 / view_ref.zoom.max(0.001);
 
-    // Search across all visible files' layers at current Z
+    // Determine which Z to use (right pane may have independent navigation)
+    let current_z = if use_right_independent {
+        state.tab_manager.split_right_navigation.as_ref()
+            .map(|nav| nav.state().current_z)
+            .unwrap_or_else(|| state.navigation.state().current_z)
+    } else {
+        state.navigation.state().current_z
+    };
+
+    // In split mode, only hit-test against the file shown in this pane
+    let files_to_test: Vec<&crate::domain::entities::FileEntry> = if is_split {
+        let left_id = state.tab_manager.active_tab_id
+            .or_else(|| state.files.files.first().map(|f| f.id));
+        let right_id = state.tab_manager.split_right_active_id
+            .or(state.tab_manager.split_partner_id)
+            .or_else(|| {
+                state.tab_manager.open_tab_ids.iter()
+                    .find(|&&id| Some(id) != left_id)
+                    .copied()
+            })
+            .or_else(|| state.files.files.iter().find(|f| Some(f.id) != left_id).map(|f| f.id));
+        let target_id = if use_right { right_id } else { left_id };
+        if let Some(tid) = target_id {
+            state.files.files.iter().filter(|f| f.id == tid).collect()
+        } else {
+            vec![]
+        }
+    } else {
+        state.files.visible_files().collect()
+    };
+
+    // Search across target files' layers at current Z
     let mut best_hit: Option<(f32, Option<f32>, Option<f32>, Option<f32>)> = None;
-    for file in state.files.visible_files() {
+    for file in files_to_test {
         if let Some(layer) = file.toolpath.slice_stack.get_layer_by_z(current_z) {
             let visible_indices: Vec<usize> = layer.vectors.iter().enumerate()
                 .filter(|(_, v)| match v.vector_type {

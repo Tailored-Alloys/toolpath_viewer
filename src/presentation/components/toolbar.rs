@@ -43,24 +43,28 @@ pub fn show_toolbar(
 
     egui::TopBottomPanel::top("toolbar")
         .exact_height(TOOLBAR_HEIGHT)
+        .show_separator_line(false)
         .frame(
             egui::Frame::none()
                 .fill(t.toolbar_bg)
-                .inner_margin(egui::Margin::symmetric(12.0, 8.0)),
+                .inner_margin(egui::Margin::symmetric(12.0, 8.0))
+                .stroke(Stroke::NONE),
         )
         .show(ctx, |ui| {
-            // Only draw a bottom border when there is no tab bar below
-            // (the tab bar draws its own bottom border as the separator)
-            if !has_tab_bar {
-                let panel_rect = ui.max_rect();
+            // Draw bottom border at the full panel edge
+            {
+                let full_rect = ui.max_rect().expand2(
+                    egui::vec2(12.0, 8.0), // match frame inner_margin
+                );
                 ui.painter().line_segment(
                     [
-                        egui::pos2(panel_rect.left(), panel_rect.bottom()),
-                        egui::pos2(panel_rect.right(), panel_rect.bottom()),
+                        egui::pos2(full_rect.left(), full_rect.bottom()),
+                        egui::pos2(full_rect.right(), full_rect.bottom()),
                     ],
                     Stroke::new(1.0, t.toolbar_border),
                 );
             }
+
             ui.horizontal_centered(|ui| {
                 // ── Group 1: Display ──
                 let icon_arrow = &LucideIcon::Navigation2.unicode().to_string();

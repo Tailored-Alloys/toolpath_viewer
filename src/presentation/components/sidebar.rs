@@ -167,137 +167,212 @@ fn show_toolpaths_tab(
 
     ui.add_space(6.0);
 
-    ui.separator();
-    ui.add_space(4.0);
+    if files.files.is_empty() {
+        // ── Empty state: subtle placeholder instead of stacked separators ──
+        ui.add_space(12.0);
+        ui.vertical_centered(|ui| {
+            ui.label(
+                RichText::new("No files loaded")
+                    .size(11.0)
+                    .color(t.text_secondary),
+            );
+        });
+    } else {
+        // ── File list ──
+        ui.separator();
+        ui.add_space(4.0);
+        ui.spacing_mut().item_spacing.y = 1.0;
 
-    // File list (scrollable within sidebar scroll area)
-    for file in &files.files {
-        let is_active_tab = view_mode == ViewMode::Tab && active_tab_file == Some(file.id);
-        let row_fill = if is_active_tab {
-            Color32::from_rgba_unmultiplied(
-                (t.accent.r() as u16 * 30 / 255) as u8,
-                (t.accent.g() as u16 * 30 / 255) as u8,
-                (t.accent.b() as u16 * 30 / 255) as u8,
-                30,
-            )
-        } else {
-            Color32::TRANSPARENT
-        };
+        let row_h = 28.0;
+        let available_w = ui.available_width();
 
-        egui::Frame::none()
-            .fill(row_fill)
-            .rounding(Rounding::same(4.0))
-            .inner_margin(egui::Margin::symmetric(2.0, 1.0))
-            .show(ui, |ui| {
-                ui.horizontal(|ui| {
-                    // Color swatch
-                    let swatch_color = color_to_color32(&file.color);
-                    let (rect, _) = ui.allocate_exact_size(Vec2::new(12.0, 12.0), egui::Sense::hover());
-                    ui.painter().rect_filled(rect, 2.0, swatch_color);
+        for file in &files.files {
+            let is_active_tab = view_mode == ViewMode::Tab && active_tab_file == Some(file.id);
+            let row_id = ui.id().with("file_row").with(file.id);
 
-                    // Visibility toggle (eye icon) — only in Overlay mode
-                    if view_mode == ViewMode::Overlay {
-                        let eye_icon = if file.visible {
-                            LucideIcon::Eye.unicode()
-                        } else {
-                            LucideIcon::EyeOff.unicode()
-                        };
-                        let eye_color = if file.visible { t.text_primary } else { t.text_secondary };
-                        let eye_btn = egui::Button::new(
-                            RichText::new(eye_icon.to_string()).size(11.0).color(eye_color),
-                        )
-                        .fill(Color32::TRANSPARENT)
-                        .rounding(Rounding::same(4.0))
-                        .min_size(Vec2::new(20.0, 20.0));
-                        if ui.add(eye_btn).on_hover_text("Toggle visibility").clicked() {
-                            output.toggle_visibility = Some(file.id);
-                        }
-                    }
+            // Allocate a fixed row region so we can detect hover on the full row
+            let (row_rect, row_resp) = ui.allocate_exact_size(
+                Vec2::new(available_w, row_h),
+                egui::Sense::click(),
+            );
+            let is_hovered = row_resp.hovered();
 
-                    // Tab mode: radio button to select active file
-                    if view_mode == ViewMode::Tab {
-                        let selected = active_tab_file == Some(file.id);
-                        if ui.radio(selected, "").clicked() {
-                            output.select_tab_file = Some(file.id);
-                        }
-                    }
-
-                    // File name
-                    let name_color = if is_active_tab {
-                        t.accent
-                    } else if file.visible || view_mode != ViewMode::Overlay {
-                        t.text_primary
-                    } else {
-                        t.text_secondary
-                    };
-                    let max_name_len = 20;
-                    let display_name = if file.name.len() > max_name_len {
-                        format!("{}…", &file.name[..max_name_len])
-                    } else {
-                        file.name.clone()
-                    };
-
-                    if view_mode == ViewMode::Tab {
-                        let name_btn = egui::Button::new(
-                            RichText::new(display_name).size(11.0).color(name_color),
-                        )
-                        .fill(Color32::TRANSPARENT)
-                        .frame(false)
-                        .min_size(Vec2::ZERO);
-                        if ui.add(name_btn)
-                            .on_hover_text(&file.path.display().to_string())
-                            .clicked()
-                        {
-                            output.select_tab_file = Some(file.id);
-                        }
-                    } else {
-                        ui.add(
-                            egui::Label::new(
-                                RichText::new(display_name).size(11.0).color(name_color),
-                            )
-                            .truncate(true),
-                        )
-                        .on_hover_text(&file.path.display().to_string());
-                    }
-
-                    // Remove button
-                    let x_btn = egui::Button::new(
-                        RichText::new(LucideIcon::X.unicode().to_string())
-                            .size(10.0)
-                            .color(t.text_secondary),
+            // ── Row background fill ──
+            let row_fill = if is_active_tab {
+                if t.is_dark {
+                    Color32::from_rgba_unmultiplied(
+                        t.accent.r(), t.accent.g(), t.accent.b(), 35,
                     )
-                    .fill(Color32::TRANSPARENT)
-                    .rounding(Rounding::same(4.0))
-                    .min_size(Vec2::new(18.0, 18.0));
-                    if ui.add(x_btn).on_hover_text("Remove file").clicked() {
-                        output.remove_file = Some(file.id);
-                    }
-                });
-            });
+                } else {
+                    Color32::from_rgba_unmultiplied(
+                        t.accent.r(), t.accent.g(), t.accent.b(), 25,
+                    )
+                }
+            } else if is_hovered {
+                if t.is_dark {
+                    Color32::from_rgba_unmultiplied(255, 255, 255, 15)
+                } else {
+                    Color32::from_rgba_unmultiplied(0, 0, 0, 12)
+                }
+            } else {
+                Color32::TRANSPARENT
+            };
+            ui.painter().rect_filled(row_rect, Rounding::same(4.0), row_fill);
 
-        ui.add_space(2.0);
-    }
+            // ── Left accent bar on active/selected row ──
+            if is_active_tab {
+                let accent_bar = egui::Rect::from_min_size(
+                    row_rect.left_top(),
+                    Vec2::new(2.5, row_rect.height()),
+                );
+                ui.painter().rect_filled(accent_bar, Rounding::same(1.0), t.accent);
+            }
 
-    ui.add_space(4.0);
-    ui.separator();
-    ui.add_space(4.0);
+            let center_y = row_rect.center().y;
+            let painter = ui.painter();
 
-    // Add more toolpaths button (secondary/outline style)
-    let add_icon = LucideIcon::Plus.unicode();
-    let accent_outline = Color32::from_rgba_unmultiplied(
-        t.accent.r(), t.accent.g(), t.accent.b(), 40,
-    );
-    let add_btn = egui::Button::new(
-        RichText::new(format!("{} Add Toolpath", add_icon))
-            .size(11.0)
-            .color(t.accent),
-    )
-    .fill(Color32::TRANSPARENT)
-    .stroke(Stroke::new(1.0, accent_outline))
-    .rounding(Rounding::same(5.0))
-    .min_size(Vec2::new(ui.available_width(), 26.0));
-    if ui.add(add_btn).on_hover_text("Add more toolpath files (Ctrl+O)").clicked() {
-        output.add_files_requested = true;
+            // ── Color swatch ──
+            let swatch_x = row_rect.left() + 8.0;
+            let swatch_color = color_to_color32(&file.color);
+            let swatch_rect = egui::Rect::from_center_size(
+                egui::pos2(swatch_x + 5.0, center_y),
+                Vec2::new(10.0, 10.0),
+            );
+            painter.rect_filled(swatch_rect, 2.0, swatch_color);
+
+            let mut content_x = swatch_x + 16.0;
+
+            // ── Visibility toggle (eye icon) — only in Overlay mode ──
+            if view_mode == ViewMode::Overlay {
+                let eye_icon = if file.visible {
+                    LucideIcon::Eye.unicode()
+                } else {
+                    LucideIcon::EyeOff.unicode()
+                };
+                let eye_color = if file.visible { t.text_primary } else { t.text_secondary };
+                let eye_rect = egui::Rect::from_center_size(
+                    egui::pos2(content_x + 8.0, center_y),
+                    Vec2::new(18.0, 18.0),
+                );
+                let eye_resp = ui.interact(eye_rect, row_id.with("eye"), egui::Sense::click());
+                let eye_galley = painter.layout_no_wrap(
+                    eye_icon.to_string(),
+                    egui::FontId::proportional(11.0),
+                    eye_color,
+                );
+                painter.galley(
+                    egui::pos2(eye_rect.center().x - eye_galley.size().x / 2.0, center_y - eye_galley.size().y / 2.0),
+                    eye_galley,
+                    Color32::TRANSPARENT,
+                );
+                if eye_resp.on_hover_text("Toggle visibility").clicked() {
+                    output.toggle_visibility = Some(file.id);
+                }
+                content_x += 20.0;
+            }
+
+            // ── Tab mode: radio indicator ──
+            if view_mode == ViewMode::Tab {
+                let dot_center = egui::pos2(content_x + 6.0, center_y);
+                if is_active_tab {
+                    painter.circle_filled(dot_center, 4.0, t.accent);
+                } else {
+                    let ring_color = if t.is_dark {
+                        Color32::from_rgb(100, 100, 100)
+                    } else {
+                        Color32::from_rgb(180, 180, 180)
+                    };
+                    painter.circle_stroke(dot_center, 4.0, Stroke::new(1.2, ring_color));
+                }
+                content_x += 16.0;
+            }
+
+            // ── File name ──
+            let name_color = if is_active_tab {
+                t.accent
+            } else if file.visible || view_mode != ViewMode::Overlay {
+                t.text_primary
+            } else {
+                t.text_secondary
+            };
+            let max_name_len = 20;
+            let display_name = if file.name.len() > max_name_len {
+                format!("{}…", &file.name[..max_name_len])
+            } else {
+                file.name.clone()
+            };
+            let name_galley = painter.layout_no_wrap(
+                display_name,
+                egui::FontId::proportional(11.0),
+                name_color,
+            );
+            let name_pos = egui::pos2(content_x + 2.0, center_y - name_galley.size().y / 2.0);
+            painter.galley(name_pos, name_galley, Color32::TRANSPARENT);
+
+            // ── Close button (right-aligned, visible on hover or active) ──
+            if is_active_tab || is_hovered {
+                let x_center = egui::pos2(row_rect.right() - 14.0, center_y);
+                let x_size = 4.0;
+                let x_rect = egui::Rect::from_center_size(
+                    x_center,
+                    Vec2::new(18.0, 18.0),
+                );
+                let x_resp = ui.interact(x_rect, row_id.with("close"), egui::Sense::click());
+                let x_color = if x_resp.hovered() { t.text_primary } else { t.text_secondary };
+                // Draw hover background on close button
+                if x_resp.hovered() {
+                    let hover_bg = if t.is_dark {
+                        Color32::from_rgba_unmultiplied(255, 255, 255, 20)
+                    } else {
+                        Color32::from_rgba_unmultiplied(0, 0, 0, 18)
+                    };
+                    painter.rect_filled(x_rect, Rounding::same(3.0), hover_bg);
+                }
+                let x_stroke = Stroke::new(1.2, x_color);
+                painter.line_segment(
+                    [egui::pos2(x_center.x - x_size, x_center.y - x_size),
+                     egui::pos2(x_center.x + x_size, x_center.y + x_size)],
+                    x_stroke,
+                );
+                painter.line_segment(
+                    [egui::pos2(x_center.x + x_size, x_center.y - x_size),
+                     egui::pos2(x_center.x - x_size, x_center.y + x_size)],
+                    x_stroke,
+                );
+                if x_resp.on_hover_text("Remove file").clicked() {
+                    output.remove_file = Some(file.id);
+                }
+            }
+
+            // ── Row click handling (all view modes — triggers reopen for closed tabs) ──
+            if row_resp.clicked()
+                && output.remove_file != Some(file.id)
+                && output.toggle_visibility != Some(file.id)
+            {
+                output.select_tab_file = Some(file.id);
+            }
+            row_resp.on_hover_text(&file.path.display().to_string());
+        }
+
+        ui.add_space(6.0);
+
+        // ── Add more toolpaths button (secondary/outline style) ──
+        let add_icon = LucideIcon::Plus.unicode();
+        let accent_outline = Color32::from_rgba_unmultiplied(
+            t.accent.r(), t.accent.g(), t.accent.b(), 40,
+        );
+        let add_btn = egui::Button::new(
+            RichText::new(format!("{} Add Toolpath", add_icon))
+                .size(11.0)
+                .color(t.accent),
+        )
+        .fill(Color32::TRANSPARENT)
+        .stroke(Stroke::new(1.0, accent_outline))
+        .rounding(Rounding::same(5.0))
+        .min_size(Vec2::new(ui.available_width(), 26.0));
+        if ui.add(add_btn).on_hover_text("Add more toolpath files (Ctrl+O)").clicked() {
+            output.add_files_requested = true;
+        }
     }
 }
 
