@@ -1087,6 +1087,10 @@ fn handle_key_action(
                     let idx = ids.iter().position(|&id| id == active).unwrap_or(0);
                     let next = ids[(idx + 1) % ids.len()];
                     state.tab_manager.set_active(next);
+                    // Load new tab's camera so the sync-back doesn't overwrite it
+                    if let Some(tab) = state.tab_manager.active_tab() {
+                        state.render.view_state = tab.view_state.clone();
+                    }
                     ui.state.active_tab_file = Some(next);
                     state.needs_redraw = true;
                     window.request_redraw();
@@ -1101,6 +1105,10 @@ fn handle_key_action(
                     let idx = ids.iter().position(|&id| id == active).unwrap_or(0);
                     let prev = ids[(idx + ids.len() - 1) % ids.len()];
                     state.tab_manager.set_active(prev);
+                    // Load new tab's camera so the sync-back doesn't overwrite it
+                    if let Some(tab) = state.tab_manager.active_tab() {
+                        state.render.view_state = tab.view_state.clone();
+                    }
                     ui.state.active_tab_file = Some(prev);
                     state.needs_redraw = true;
                     window.request_redraw();
@@ -1112,6 +1120,10 @@ fn handle_key_action(
             if let Some(close_id) = state.tab_manager.active_tab_id {
                 state.files.toggle_visibility_off(close_id);
                 state.tab_manager.close_tab(close_id);
+                // Load new active tab's camera so the sync-back doesn't overwrite it
+                if let Some(tab) = state.tab_manager.active_tab() {
+                    state.render.view_state = tab.view_state.clone();
+                }
                 ui.state.active_tab_file = state.tab_manager.active_tab_id;
                 ui.state.has_multiple_files = state.tab_manager.tab_count() > 1;
                 if state.tab_manager.open_tab_ids.len() < 2 && ui.state.view_mode == ViewMode::Split {
@@ -1209,6 +1221,10 @@ fn handle_key_action(
             if index < ids.len() {
                 let target = ids[index];
                 state.tab_manager.set_active(target);
+                // Load new tab's camera so the sync-back doesn't overwrite it
+                if let Some(tab) = state.tab_manager.active_tab() {
+                    state.render.view_state = tab.view_state.clone();
+                }
                 ui.state.active_tab_file = Some(target);
                 state.needs_redraw = true;
                 window.request_redraw();
@@ -1397,12 +1413,20 @@ fn render_frame(
             ui.state.has_multiple_files = state.tab_manager.tab_count() > 1;
         }
         state.tab_manager.set_active(switch_id);
+        // Load new tab's camera so the sync-back doesn't overwrite it
+        if let Some(tab) = state.tab_manager.active_tab() {
+            state.render.view_state = tab.view_state.clone();
+        }
         ui.state.active_tab_file = Some(switch_id);
         state.needs_redraw = true;
     }
     if let Some(close_id) = ui_output.close_tab {
         state.files.toggle_visibility_off(close_id);
         state.tab_manager.close_tab(close_id);
+        // Load new active tab's camera so the sync-back doesn't overwrite it
+        if let Some(tab) = state.tab_manager.active_tab() {
+            state.render.view_state = tab.view_state.clone();
+        }
         ui.state.active_tab_file = state.tab_manager.active_tab_id;
         ui.state.has_multiple_files = state.tab_manager.tab_count() > 1;
         if state.tab_manager.open_tab_ids.len() < 2 && ui.state.view_mode == ViewMode::Split {
@@ -1440,6 +1464,10 @@ fn render_frame(
         state.tab_manager.overlay_select_none();
         state.tab_manager.overlay_visible_ids.insert(only_id);
         state.tab_manager.set_active(only_id);
+        // Load new tab's camera so the sync-back doesn't overwrite it
+        if let Some(tab) = state.tab_manager.active_tab() {
+            state.render.view_state = tab.view_state.clone();
+        }
         ui.state.active_tab_file = Some(only_id);
         state.needs_redraw = true;
     }
@@ -1455,6 +1483,10 @@ fn render_frame(
             state.tab_manager.close_tab(id);
         }
         state.tab_manager.set_active(keep_id);
+        // Load new tab's camera so the sync-back doesn't overwrite it
+        if let Some(tab) = state.tab_manager.active_tab() {
+            state.render.view_state = tab.view_state.clone();
+        }
         ui.state.active_tab_file = Some(keep_id);
         ui.state.has_multiple_files = state.tab_manager.tab_count() > 1;
         if state.tab_manager.open_tab_ids.len() < 2 && ui.state.view_mode == ViewMode::Split {
