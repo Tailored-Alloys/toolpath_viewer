@@ -201,6 +201,8 @@ impl App {
                         ui.state.wait_filter_min = wmin;
                         ui.state.wait_filter_max = wmax;
                     }
+                    // Sync active tab from TabManager into UI state
+                    ui.state.active_tab_file = state.tab_manager.active_tab_id;
                     let nav_state = state.navigation.state();
                     ui.update_from_navigation(
                         nav_state.current_index,
@@ -366,25 +368,23 @@ fn finalize_load(
     vp_w: f32,
     vp_h: f32,
 ) -> Result<ParamRanges> {
-    let is_first_load = state.files.is_empty();
-
     for (path, toolpath, _ranges) in loaded_files {
         let stats = toolpath.slice_stack.stats();
         info!(
             "Adding file {}: {} layers, {} vectors, {} points",
             path.display(), stats.layer_count, stats.total_vectors, stats.total_points
         );
+        let file_bounds = toolpath.slice_stack.bounds()
+            .map(|(min, max)| Bounds2D::new(min, max));
         let id = state.files.add_file(path, toolpath);
         // Create a tab for the newly loaded file
-        // We need to get the SliceStack from the file we just added
         if let Some(file) = state.files.files.iter().find(|f| f.id == id) {
             state.tab_manager.open_tab(id, &file.toolpath.slice_stack);
-            // Fit the new tab's view to the file's bounds
-            if let Some((min, max)) = file.toolpath.slice_stack.bounds() {
-                let bounds = Bounds2D::new(min, max);
-                if let Some(tab) = state.tab_manager.tab_mut(id) {
-                    tab.view_state.fit_to_bounds(&bounds, vp_w, vp_h.max(100.0));
-                }
+            // Store file bounds and mark for deferred fit (correct viewport
+            // dimensions are only available after UI layout in render_frame).
+            if let Some(tab) = state.tab_manager.tab_mut(id) {
+                tab.file_bounds = file_bounds;
+                tab.needs_initial_fit = true;
             }
         }
     }
@@ -392,14 +392,6 @@ fn finalize_load(
     // Re-initialize navigation from merged Z-heights
     let z_heights = state.files.merged_z_heights();
     state.navigation.initialize_from_z_heights(z_heights);
-
-    // Fit view if first load (use effective viewport area)
-    if is_first_load {
-        if let Some((min, max)) = state.files.merged_bounds() {
-            let bounds = Bounds2D::new(min, max);
-            state.render.view_state.fit_to_bounds(&bounds, vp_w, vp_h.max(100.0));
-        }
-    }
 
     let ranges = state.files.merged_param_ranges();
     state.needs_redraw = true;
@@ -890,9 +882,16 @@ fn handle_key_action(
         }
 
         InputAction::ResetView => {
-            if let Some((min, max)) = state.files.merged_bounds() {
-                let vp = ui.state.cached_viewport_rect;
-                let bounds = Bounds2D::new(min, max);
+            let vp = ui.state.cached_viewport_rect;
+            // In Tab mode, fit to the active file's bounds; otherwise use merged bounds
+            let bounds = if ui.state.view_mode == ViewMode::Tab {
+                state.tab_manager.active_tab()
+                    .and_then(|t| t.file_bounds)
+            } else {
+                state.files.merged_bounds()
+                    .map(|(min, max)| Bounds2D::new(min, max))
+            };
+            if let Some(bounds) = bounds {
                 state.render.view_state.fit_to_bounds(&bounds, vp.width(), vp.height());
                 state.needs_redraw = true;
                 window.request_redraw();
@@ -1351,6 +1350,32 @@ fn render_frame(
     let bottom_h = ui_output.bottom_bar_height;
     let hdr_h = ui_output.header_height;
 
+    // ── Deferred fit-to-bounds for newly loaded tabs ──
+    // Now that the authoritative canvas viewport dimensions are available from
+    // UI layout, fit any tabs that were loaded before these dimensions were known.
+    {
+        let fit_h = vp_h.max(100.0);
+        let mut refitted_active = false;
+        let active_id = state.tab_manager.active_tab_id;
+        for tab in state.tab_manager.all_tabs_mut() {
+            if tab.needs_initial_fit {
+                if let Some(bounds) = tab.file_bounds {
+                    tab.view_state.fit_to_bounds(&bounds, vp_w, fit_h);
+                }
+                tab.needs_initial_fit = false;
+                if Some(tab.file_id) == active_id {
+                    refitted_active = true;
+                }
+            }
+        }
+        // If the active tab was re-fitted, propagate its camera to the global render view
+        if refitted_active {
+            if let Some(tab) = state.tab_manager.active_tab() {
+                state.render.view_state = tab.view_state.clone();
+            }
+        }
+    }
+
     // Handle file open request from Load button or file panel Add button
     if ui_output.open_file_requested || ui_output.add_files_requested {
         open_file_dialog(window, state, ui, load_use_case);
@@ -1524,9 +1549,16 @@ fn render_frame(
         state.needs_redraw = true;
     }
     if ui_output.fit_view_requested {
-        if let Some((min, max)) = state.files.merged_bounds() {
-            let render_height = vp_h.max(100.0);
-            let bounds = Bounds2D::new(min, max);
+        // In Tab mode, fit to the active file's bounds; otherwise use merged bounds
+        let render_height = vp_h.max(100.0);
+        let bounds = if ui_output.view_mode == ViewMode::Tab {
+            state.tab_manager.active_tab()
+                .and_then(|t| t.file_bounds)
+        } else {
+            state.files.merged_bounds()
+                .map(|(min, max)| Bounds2D::new(min, max))
+        };
+        if let Some(bounds) = bounds {
             state.render.view_state.fit_to_bounds(&bounds, vp_w, render_height);
             state.needs_redraw = true;
         }

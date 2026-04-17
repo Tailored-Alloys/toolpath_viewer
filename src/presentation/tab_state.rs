@@ -11,6 +11,7 @@ use std::collections::{HashMap, HashSet};
 use crate::application::ports::ViewState;
 use crate::application::use_cases::NavigateLayersUseCase;
 use crate::domain::entities::SliceStack;
+use crate::domain::value_objects::Bounds2D;
 
 // ── Per-tab state ────────────────────────────────────────────────────────
 
@@ -31,6 +32,13 @@ pub struct TabState {
     pub show_hatches: bool,
     pub show_arrows: bool,
     pub show_wait_markers: bool,
+
+    // ── Viewport fit ──
+    /// Whether this tab still needs an initial fit-to-bounds (deferred until
+    /// the authoritative viewport dimensions are available after UI layout).
+    pub needs_initial_fit: bool,
+    /// Cached bounding box of the file's geometry for fit/reset operations.
+    pub file_bounds: Option<Bounds2D>,
 
     // ── Vector playback ──
     pub vector_view_enabled: bool,
@@ -56,6 +64,8 @@ impl TabState {
             show_hatches: true,
             show_arrows: false,
             show_wait_markers: false,
+            needs_initial_fit: true,
+            file_bounds: None,
             vector_view_enabled: false,
             current_vector_index: 0,
             total_vectors_in_layer: 0,
@@ -114,10 +124,8 @@ impl TabManager {
         if !self.open_tab_ids.contains(&file_id) {
             self.open_tab_ids.push(file_id);
         }
-        // Auto-activate the first tab
-        if self.active_tab_id.is_none() {
-            self.active_tab_id = Some(file_id);
-        }
+        // Always activate the newly opened tab so the user sees it immediately
+        self.active_tab_id = Some(file_id);
         // In overlay mode, newly opened tabs are visible by default
         self.overlay_visible_ids.insert(file_id);
     }
@@ -187,6 +195,11 @@ impl TabManager {
 
     pub fn tab_mut(&mut self, file_id: usize) -> Option<&mut TabState> {
         self.tabs.get_mut(&file_id)
+    }
+
+    /// Iterate mutably over all tab states.
+    pub fn all_tabs_mut(&mut self) -> impl Iterator<Item = &mut TabState> {
+        self.tabs.values_mut()
     }
 
     /// Permanently remove a file's tab state (when the file is unloaded).
