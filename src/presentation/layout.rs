@@ -8,9 +8,9 @@
 //! - Top: toolbar (full width)
 //! - Left: collapsible sidebar (files + gradient legends)
 //! - Right: vertical layer slider (inline, displaces viewport)
-//! - Bottom: status bar (always) + vector player bar (conditional)
-//! - Center: viewport (remaining space)
-//! - Floating: tool panel (top-right of viewport)
+/// - Bottom: status bar (always)
+/// - Center: viewport (remaining space)
+/// - Floating: tool panel (top-right of viewport), vector player (bottom-center of viewport)
 
 use egui::Rect;
 
@@ -93,8 +93,6 @@ pub struct VisibilityFlags {
     pub has_layers: bool,
     /// Whether a parameter mode is active (controls gradient legend in sidebar)
     pub show_gradient: bool,
-    /// Whether wait markers are active (controls wait gradient legend in sidebar)
-    pub show_wait_gradient: bool,
     /// Whether the scale bar is visible
     pub show_scale_bar: bool,
     /// Whether file info popup is open
@@ -111,6 +109,8 @@ pub struct VisibilityFlags {
     pub has_tab_bar: bool,
     /// Dynamic sidebar content panel width (user-resizable, clamped to min/max)
     pub sidebar_content_width: f32,
+    /// Whether gradient scale overlays are expanded (param, wait)
+    pub gradient_expanded: [bool; 2],
 }
 
 // ── Layout Regions ───────────────────────────────────────────────────────
@@ -148,6 +148,9 @@ pub struct LayoutRegions {
     /// Scale bar — bottom-left of viewport
     pub scale_bar: Option<Rect>,
 
+    /// Gradient scale overlays — floating panels to the left of the tool panel
+    pub gradient_scales: Vec<GradientRegion>,
+
     /// Secondary header tab bar — below toolbar, shown when files are open
     pub tab_bar: Option<Rect>,
 
@@ -173,8 +176,6 @@ pub struct SidebarRegion {
     pub bottom: f32,
     /// Available content height inside the sidebar
     pub content_height: f32,
-    /// Whether gradient legend should show ticks
-    pub show_gradient_ticks: bool,
 }
 
 /// Tool panel positioning info
@@ -199,7 +200,7 @@ pub struct LayerSliderRegion {
     pub show_goto: bool,
 }
 
-/// Gradient panel positioning info (used inside sidebar)
+/// Gradient panel positioning info (used for viewport overlay)
 #[derive(Debug, Clone)]
 pub struct GradientRegion {
     /// Position for the egui Area (top-left)
@@ -212,6 +213,9 @@ pub struct GradientRegion {
     pub show_ticks: bool,
 }
 
+/// Width of the gradient scale overlay panel
+pub const GRADIENT_SCALE_WIDTH: f32 = 60.0;
+
 /// Status bar positioning info
 #[derive(Debug, Clone)]
 pub struct StatusBarRegion {
@@ -221,11 +225,13 @@ pub struct StatusBarRegion {
     pub height: f32,
 }
 
-/// Vector player bar positioning info (horizontal, above status bar)
+/// Vector player bar positioning info (floating, centered above status bar)
 #[derive(Debug, Clone)]
 pub struct VectorPlayerRegion {
-    /// Full rect for the vector player bar
-    pub rect: Rect,
+    /// Anchor position (center-top of the floating bar)
+    pub anchor_pos: egui::Pos2,
+    /// Width of the floating bar
+    pub width: f32,
     /// Height of the bar
     pub height: f32,
 }
@@ -241,10 +247,8 @@ impl LayoutRegions {
     /// │      │      │   Tab Bar         │          │
     /// │ Act. │ Side ├───────────────────┤  Layer   │
     /// │ Bar  │ bar  │    Viewport       │  Slider  │
-    /// │      │      │                   │          │
+    /// │      │      │  [Vector Player]  │          │
     /// ├──────┴──────┴───────────────────┴──────────┤
-    /// │           Vector Player (conditional)      │
-    /// ├───────────────────────────────────────────│
     /// │              Status Bar                    │
     /// └───────────────────────────────────────────┘
     /// ```
@@ -298,31 +302,36 @@ impl LayoutRegions {
             height: STATUS_BAR_HEIGHT,
         };
 
-        // ── Vector player bar (conditional, above status bar) ──
+        // Bottom edge of the viewport area (above status bar only — vector player floats)
+        let viewport_bottom = screen_h - STATUS_BAR_HEIGHT;
+
+        // ── Vector player bar (floating, centered above status bar) ──
         let vector_player = if flags.vector_view_active && flags.has_layers {
-            let vp_rect = Rect::from_min_size(
-                egui::pos2(screen.left(), screen_h - STATUS_BAR_HEIGHT - VECTOR_PLAYER_HEIGHT),
-                egui::vec2(screen_w, VECTOR_PLAYER_HEIGHT),
-            );
+            // Compute the floating bar width: spans the viewport center, capped at 600px
+            let vp_left = screen.left() + sidebar_width;
+            let layer_slider_right_w = if flags.has_layers {
+                LAYER_SLIDER_WIDTH + PANEL_MARGIN
+            } else {
+                0.0
+            };
+            let vp_right = screen.right() - layer_slider_right_w;
+            let vp_center_x = (vp_left + vp_right) / 2.0;
+            let vp_available_w = (vp_right - vp_left).max(0.0);
+            let bar_width = (vp_available_w - 2.0 * PANEL_MARGIN).min(600.0).max(200.0);
+            let bar_x = vp_center_x - bar_width / 2.0;
+            let bar_y = viewport_bottom - VECTOR_PLAYER_HEIGHT - PANEL_MARGIN;
             Some(VectorPlayerRegion {
-                rect: vp_rect,
+                anchor_pos: egui::pos2(bar_x, bar_y),
+                width: bar_width,
                 height: VECTOR_PLAYER_HEIGHT,
             })
         } else {
             None
         };
 
-        // Bottom edge of the viewport area (above vector player / status bar)
-        let viewport_bottom = if vector_player.is_some() {
-            screen_h - STATUS_BAR_HEIGHT - VECTOR_PLAYER_HEIGHT
-        } else {
-            screen_h - STATUS_BAR_HEIGHT
-        };
-
         // ── Sidebar (activity bar always visible + collapsible content panel) ──
         let sidebar_bottom = viewport_bottom;
         let sidebar_content_h = (sidebar_bottom - content_top - 16.0).max(100.0);
-        let sidebar_show_ticks = sidebar_content_h > GRADIENT_TICKS_MIN_HEIGHT;
         let sidebar = SidebarRegion {
             content_visible,
             activity_bar_width: ACTIVITY_BAR_WIDTH,
@@ -331,7 +340,6 @@ impl LayoutRegions {
             top: content_top,
             bottom: sidebar_bottom,
             content_height: sidebar_content_h,
-            show_gradient_ticks: sidebar_show_ticks,
         };
 
         // ── Layer slider (right, inline, displaces viewport) ──
@@ -372,11 +380,35 @@ impl LayoutRegions {
             top: tool_panel_top,
         };
 
+        // ── Gradient scale overlays (left side of viewport, right of sidebar) ──
+        let mut gradient_scales = Vec::new();
+        if flags.show_gradient {
+            let scale_w = GRADIENT_SCALE_WIDTH;
+            let scale_left = sidebar_width + PANEL_MARGIN;
+            let scale_top = content_top + PANEL_MARGIN;
+            let available_h = (viewport_bottom - scale_top - BOTTOM_MARGIN).max(120.0);
+            let frame_overhead = 16.0;
+            let content_h = available_h - frame_overhead;
+            let show_ticks = content_h > GRADIENT_TICKS_MIN_HEIGHT;
+            gradient_scales.push(GradientRegion {
+                pos: egui::pos2(scale_left, scale_top),
+                content_height: content_h,
+                width: scale_w,
+                show_ticks,
+            });
+        }
+
         // ── Scale bar ──
+        // Shift right if gradient scale overlays are visible to avoid overlap
+        let scale_bar_left = if gradient_scales.is_empty() {
+            sidebar_width + SCALE_BAR_MARGIN
+        } else {
+            sidebar_width + PANEL_MARGIN + GRADIENT_SCALE_WIDTH + PANEL_GAP
+        };
         let scale_bar = if flags.show_scale_bar {
             Some(Rect::from_min_size(
                 egui::pos2(
-                    sidebar_width + SCALE_BAR_MARGIN,
+                    scale_bar_left,
                     viewport_bottom - SCALE_BAR_MARGIN - 30.0,
                 ),
                 egui::vec2(220.0, 30.0),
@@ -403,6 +435,7 @@ impl LayoutRegions {
             status_bar,
             vector_player,
             scale_bar,
+            gradient_scales,
             tab_bar,
             viewport,
         }

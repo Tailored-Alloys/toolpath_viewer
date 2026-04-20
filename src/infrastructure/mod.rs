@@ -10,3 +10,4 @@
 pub mod file_adapters;
 pub mod rendering;
 pub mod config;
+pub mod updater;

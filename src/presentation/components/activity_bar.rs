@@ -26,7 +26,6 @@ struct SidebarTabInfo {
 /// Registry of all sidebar tabs. Add new tabs here.
 const SIDEBAR_TABS: &[SidebarTabInfo] = &[
     SidebarTabInfo { tab: SidebarTab::Toolpaths, icon: LucideIcon::Files, tooltip: "Toolpaths" },
-    SidebarTabInfo { tab: SidebarTab::ParameterLegend, icon: LucideIcon::Palette, tooltip: "Parameter Legend" },
 ];
 
 /// Output from the activity bar component

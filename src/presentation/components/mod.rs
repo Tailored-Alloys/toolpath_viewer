@@ -16,6 +16,7 @@ pub mod sidebar;
 pub mod status_bar;
 pub mod activity_bar;
 pub mod tab_bar;
+pub mod update_notification;
 
 pub use toolbar::*;
 pub use layer_slider::*;

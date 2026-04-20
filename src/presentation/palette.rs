@@ -8,7 +8,7 @@ use crate::domain::value_objects::Color;
 
 // Re-export from application layer for convenience
 pub use crate::application::ports::{
-    CustomPaletteConfig, PaletteId, ThemeMode, ALL_PALETTE_IDS,
+    CustomPaletteConfig, GradientPaletteId, PaletteId, ThemeMode, ALL_PALETTE_IDS,
 };
 
 // ── Resolved mode ───────────────────────────────────────────────────────
@@ -109,6 +109,44 @@ pub fn gradient_color(palette: &ThemePalette, t: f32) -> Color {
         }
     }
     stops[stops.len() - 1].1
+}
+
+/// Evaluate a gradient colormap at parameter `t` ∈ [0, 1] using explicit stops.
+pub fn gradient_color_from_stops(stops: &[(f32, Color)], t: f32) -> Color {
+    let t = t.clamp(0.0, 1.0);
+    if stops.is_empty() {
+        return Color::WHITE;
+    }
+    if stops.len() == 1 || t <= stops[0].0 {
+        return stops[0].1;
+    }
+    if t >= stops[stops.len() - 1].0 {
+        return stops[stops.len() - 1].1;
+    }
+    for i in 0..stops.len() - 1 {
+        let (t0, c0) = &stops[i];
+        let (t1, c1) = &stops[i + 1];
+        if t >= *t0 && t <= *t1 {
+            let s = if (t1 - t0).abs() < 1e-6 {
+                0.0
+            } else {
+                (t - t0) / (t1 - t0)
+            };
+            return c0.blend(c1, s);
+        }
+    }
+    stops[stops.len() - 1].1
+}
+
+/// Resolve gradient stops for a given `GradientPaletteId`.
+pub fn resolve_gradient_stops(id: GradientPaletteId) -> Vec<(f32, Color)> {
+    match id {
+        GradientPaletteId::Viridis => viridis_stops(),
+        GradientPaletteId::Cividis => cividis_stops(),
+        GradientPaletteId::Turbo => turbo_stops(),
+        GradientPaletteId::Ocean => ocean_stops(),
+        GradientPaletteId::Inferno => inferno_stops(),
+    }
 }
 
 // ── Resolve palette ─────────────────────────────────────────────────────

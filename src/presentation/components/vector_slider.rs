@@ -1,6 +1,6 @@
 //! Vector Player Component
 //!
-//! Horizontal video-player-style bar above the status bar:
+//! Floating video-player-style bar centered at the bottom of the viewport:
 //! |◀ First| ▶ Play/Pause | Last ▶| [═══ slider ═══] | 12/450 | 1x Speed |
 
 use egui::{Color32, Context, RichText, Rounding, Stroke, Vec2};
@@ -35,16 +35,25 @@ pub fn show_vector_player(
     let t = theme::active();
     let max_vector = total_vectors.saturating_sub(1);
 
-    egui::TopBottomPanel::bottom("vector_player_bar")
-        .exact_height(region.height)
-        .frame(
-            egui::Frame::none()
+    egui::Area::new(egui::Id::new("vector_player_floating"))
+        .fixed_pos(region.anchor_pos)
+        .order(egui::Order::Foreground)
+        .interactable(true)
+        .show(ctx, |ui| {
+            let frame = egui::Frame::none()
                 .fill(t.toolbar_bg)
                 .stroke(Stroke::new(1.0, t.toolbar_border))
-                .inner_margin(egui::Margin::symmetric(8.0, 4.0)),
-        )
-        .show(ctx, |ui| {
-            ui.horizontal_centered(|ui| {
+                .rounding(Rounding::same(8.0))
+                .inner_margin(egui::Margin::symmetric(12.0, 6.0))
+                .shadow(egui::epaint::Shadow {
+                    offset: egui::vec2(0.0, 2.0),
+                    blur: 8.0,
+                    spread: 0.0,
+                    color: Color32::from_black_alpha(40),
+                });
+            frame.show(ui, |ui| {
+                ui.set_width(region.width - 24.0); // account for inner_margin
+                ui.horizontal_centered(|ui| {
                 ui.spacing_mut().item_spacing.x = 4.0;
                 let btn_size = Vec2::new(26.0, 26.0);
                 let icon_sz = 14.0;
@@ -215,6 +224,7 @@ pub fn show_vector_player(
                         .unwrap_or(1);
                     *playback_speed = speed_opts[(current_idx + 1) % speed_opts.len()];
                 }
+            });
             });
         });
 

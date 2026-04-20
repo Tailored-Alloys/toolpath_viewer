@@ -11,7 +11,7 @@ use egui_winit::State as EguiWinitState;
 use lucide_icons::Icon as LucideIcon;
 use std::sync::Arc;
 
-use crate::application::ports::{ColorMode, GlobalUnits, PaletteId, ParameterMode, ThemeMode, ViewMode};
+use crate::application::ports::{ColorMode, GlobalUnits, GradientPaletteId, PaletteId, ParameterMode, ThemeMode, ViewMode};
 
 use super::layout::{LayoutRegions, VisibilityFlags, TOOLBAR_BOTTOM, TAB_BAR_HEIGHT};
 use super::palette::ThemePalette;
@@ -26,8 +26,6 @@ use super::tab_state::TabManager;
 pub enum SidebarTab {
     /// Toolpaths / file browser tab
     Toolpaths,
-    /// Parameter legend / color map tab
-    ParameterLegend,
 }
 
 impl Default for SidebarTab {
@@ -221,6 +219,8 @@ pub struct UiOutput {
     pub theme_changed: bool,
     /// Whether canvas settings changed this frame
     pub canvas_changed: bool,
+    /// Whether a gradient scale palette was changed this frame
+    pub gradient_palette_changed: bool,
     /// The active palette (for renderer sync)
     pub active_palette: ThemePalette,
     /// Viewport rect from LayoutRegions (single source of truth for GL + input)
@@ -359,6 +359,16 @@ pub struct UiState {
     pub focus_layer_input: bool,
     /// Which split pane the mouse is currently over (Split mode only)
     pub active_split_pane: SplitPane,
+    /// Whether the gradient scale overlays are expanded [param, wait]
+    pub gradient_expanded: [bool; 2],
+    /// Gradient palette for the parameter scale overlay
+    pub gradient_palette_id: GradientPaletteId,
+    /// Whether a gradient scale palette changed this frame
+    pub gradient_palette_changed: bool,
+    /// Shared update state (for auto-update notifications)
+    pub update_state: crate::infrastructure::updater::updater::SharedUpdateState,
+    /// Whether the user dismissed the update notification
+    pub update_dismissed: bool,
 }
 
 impl Default for UiState {
@@ -418,6 +428,11 @@ impl Default for UiState {
             canvas_settings: crate::application::ports::CanvasConfig::default(),
             focus_layer_input: false,
             active_split_pane: SplitPane::default(),
+            gradient_expanded: [false; 2],
+            gradient_palette_id: GradientPaletteId::default(),
+            gradient_palette_changed: false,
+            update_state: crate::infrastructure::updater::updater::new_shared_state(),
+            update_dismissed: false,
         }
     }
 }
@@ -534,7 +549,6 @@ impl UiRenderer {
         let flags = VisibilityFlags {
             has_layers: self.state.total_layers > 0,
             show_gradient: self.state.param_mode.is_some(),
-            show_wait_gradient: self.state.show_wait_markers && self.state.param_ranges.wait_time.is_some(),
             show_scale_bar: self.state.tool_state.show_scale_bar,
             show_file_info: self.state.show_file_info,
             show_controls: self.state.show_controls,
@@ -543,6 +557,7 @@ impl UiRenderer {
             sidebar_open: self.state.sidebar_open,
             has_tab_bar: tab_manager.has_tabs(),
             sidebar_content_width: self.state.sidebar_content_width,
+            gradient_expanded: self.state.gradient_expanded,
         };
         let regions = LayoutRegions::compute(screen, &flags);
 
@@ -685,29 +700,15 @@ impl UiRenderer {
                 }
             }
 
-            // ── Sidebar content panel (left SidePanel — dispatched by active tab) ──
+            // ── Sidebar content panel (left SidePanel — Toolpaths tab) ──
             {
-                let show_gradient = self.state.param_mode.is_some();
-                let show_wait_gradient = self.state.show_wait_markers && self.state.param_ranges.wait_time.is_some();
                 let sidebar_out = components::show_sidebar(
                     ctx,
                     &regions.sidebar,
-                    self.state.active_sidebar_tab,
                     files,
                     self.state.color_mode,
                     self.state.view_mode,
                     self.state.active_tab_file,
-                    show_gradient,
-                    self.state.param_mode,
-                    &mut self.state.param_filter_min,
-                    &mut self.state.param_filter_max,
-                    &self.state.param_ranges,
-                    show_wait_gradient,
-                    &mut self.state.wait_filter_min,
-                    &mut self.state.wait_filter_max,
-                    &self.state.global_units,
-                    &self.state.active_palette,
-                    regions.sidebar.show_gradient_ticks,
                 );
                 if sidebar_out.add_files_requested {
                     add_files_requested = true;
@@ -865,6 +866,33 @@ impl UiRenderer {
             zoom_out_requested = tool_out.zoom_out_requested;
             fit_view_requested = tool_out.fit_view_requested;
             snapshot_requested = tool_out.snapshot_requested;
+
+            // ── Gradient scale overlays (floating, to the left of tool panel) ──
+            self.state.gradient_palette_changed = false;
+            {
+                let show_gradient = self.state.param_mode.is_some();
+
+                if show_gradient {
+                    if let (Some(pm), Some(region)) =
+                        (self.state.param_mode, regions.gradient_scales.get(0))
+                    {
+                        let grad_out = components::gradient_scale::show_gradient_scale(
+                            ctx,
+                            region,
+                            pm,
+                            &mut self.state.param_filter_min,
+                            &mut self.state.param_filter_max,
+                            &self.state.param_ranges,
+                            &self.state.global_units,
+                            &mut self.state.gradient_palette_id,
+                            &mut self.state.gradient_expanded[0],
+                        );
+                        if grad_out.palette_changed {
+                            self.state.gradient_palette_changed = true;
+                        }
+                    }
+                }
+            }
 
             // (file panel now in sidebar)
 
@@ -1099,8 +1127,16 @@ impl UiRenderer {
 
             // ── Overlays (Order::Middle so panels render on top) ──
             if self.state.tool_state.show_scale_bar {
-                let left_offset = regions.sidebar_width();
-                let bottom_offset = ctx.screen_rect().bottom() - regions.viewport_bottom();
+                let mut left_offset = regions.sidebar_width();
+                // Shift scale bar right when gradient scale overlays are visible
+                if !regions.gradient_scales.is_empty() {
+                    left_offset += super::layout::GRADIENT_SCALE_WIDTH + super::layout::PANEL_MARGIN + super::layout::PANEL_GAP;
+                }
+                let mut bottom_offset = ctx.screen_rect().bottom() - regions.viewport_bottom();
+                // Shift scale bar up when the floating vector player is visible
+                if regions.vector_player.is_some() {
+                    bottom_offset += super::layout::VECTOR_PLAYER_HEIGHT + super::layout::PANEL_MARGIN;
+                }
                 components::show_scale_bar(
                     ctx,
                     self.state.tool_state_zoom,
@@ -1232,6 +1268,36 @@ impl UiRenderer {
             }
 
 
+            // ── Update notification ──
+            {
+                let current_state = self.state.update_state.lock()
+                    .map(|s| s.clone())
+                    .unwrap_or(crate::infrastructure::updater::updater::UpdateState::Idle);
+                let notif_out = components::update_notification::show_update_notification(
+                    ctx,
+                    &current_state,
+                    &mut self.state.update_dismissed,
+                );
+                if notif_out.download_requested {
+                    if let crate::infrastructure::updater::updater::UpdateState::Available(ref info) = current_state {
+                        crate::infrastructure::updater::updater::download_and_install(
+                            info,
+                            self.state.update_state.clone(),
+                        );
+                    }
+                }
+                if notif_out.install_requested {
+                    if let crate::infrastructure::updater::updater::UpdateState::ReadyToInstall(ref path) = current_state {
+                        let _ = crate::infrastructure::updater::updater::launch_installer(path);
+                    }
+                }
+                if notif_out.view_release {
+                    if let crate::infrastructure::updater::updater::UpdateState::Available(ref info) = current_state {
+                        let _ = open::that(&info.release_url);
+                    }
+                }
+            }
+
             // ── Loading overlay ──
             if let Some(ref file_name) = self.state.loading_file {
                 let screen = ctx.screen_rect();
@@ -1358,6 +1424,7 @@ impl UiRenderer {
             vector_view_enabled: self.state.vector_view_enabled,
             theme_changed: self.state.theme_changed,
             canvas_changed: self.state.canvas_changed,
+            gradient_palette_changed: self.state.gradient_palette_changed,
             active_palette: self.state.active_palette.clone(),
             view_mode: self.state.view_mode,
             active_tab_file: self.state.active_tab_file,
@@ -1377,8 +1444,7 @@ impl UiRenderer {
             split_sync_toggled,
             viewport_rect: regions.viewport,
             sidebar_total_width: regions.sidebar.total_width,
-            bottom_bar_height: regions.status_bar.height
-                + regions.vector_player.as_ref().map(|vp| vp.height).unwrap_or(0.0),
+            bottom_bar_height: regions.status_bar.height,
             header_height: TOOLBAR_BOTTOM
                 + if flags.has_tab_bar { TAB_BAR_HEIGHT } else { 0.0 },
         };

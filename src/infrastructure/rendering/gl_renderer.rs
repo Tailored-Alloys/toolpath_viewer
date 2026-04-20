@@ -517,17 +517,18 @@ impl GlRenderer {
             }
 
             // --- Wait time markers (circles at END of vectors with wait_time) ---
-            // Circle size depends on wait time value; color from gradient
+            // Circle SIZE represents the wait time value; color is a fixed marker color.
             if let Some(wait_val) = vector.parameters.wait_time {
                 if vector.points.len() >= 2 {
-                    // Compute normalized value for gradient color and circle sizing
+                    // Compute normalized value for circle sizing
                     let range = options.wait_time_max - options.wait_time_min;
                     let t = if range > 0.0 {
-                        (wait_val - options.wait_time_min) / range
+                        ((wait_val - options.wait_time_min) / range).clamp(0.0, 1.0)
                     } else {
                         0.5
                     };
-                    let wait_color = self.eval_gradient(t);
+                    // Fixed warm amber color for wait markers (visible on both light/dark)
+                    let wait_color = Color { r: 1.0, g: 0.6, b: 0.15, a: 0.85 };
                     // Radius scales linearly with normalized wait time
                     let circle_radius = ((CIRCLE_RADIUS_MIN + t * (CIRCLE_RADIUS_MAX - CIRCLE_RADIUS_MIN))
                         * options.wait_marker_size_multiplier)

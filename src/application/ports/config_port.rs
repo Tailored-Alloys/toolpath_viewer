@@ -39,6 +39,9 @@ pub struct AppConfig {
     /// Canvas rendering settings
     #[serde(default)]
     pub canvas: CanvasConfig,
+    /// Gradient scale overlay settings
+    #[serde(default)]
+    pub gradient_scale: GradientScaleConfig,
     /// Recent files list
     pub recent_files: Vec<String>,
 }
@@ -51,10 +54,65 @@ impl Default for AppConfig {
             colors: ColorConfig::default(),
             theme: ThemeConfig::default(),
             canvas: CanvasConfig::default(),
+            gradient_scale: GradientScaleConfig::default(),
             recent_files: Vec::new(),
         }
     }
 }
+
+/// Gradient scale overlay settings (persisted)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GradientScaleConfig {
+    /// Gradient palette for the parameter scale (viridis, cividis, turbo, ocean, inferno)
+    pub gradient_palette: GradientPaletteId,
+}
+
+impl Default for GradientScaleConfig {
+    fn default() -> Self {
+        Self {
+            gradient_palette: GradientPaletteId::default(),
+        }
+    }
+}
+
+/// Identifies a gradient colormap preset for the scale overlay.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GradientPaletteId {
+    Viridis,
+    Cividis,
+    Turbo,
+    Ocean,
+    Inferno,
+}
+
+impl Default for GradientPaletteId {
+    fn default() -> Self {
+        GradientPaletteId::Viridis
+    }
+}
+
+impl GradientPaletteId {
+    /// Human-readable display name.
+    pub fn label(&self) -> &'static str {
+        match self {
+            GradientPaletteId::Viridis => "Viridis",
+            GradientPaletteId::Cividis => "Cividis",
+            GradientPaletteId::Turbo => "Turbo",
+            GradientPaletteId::Ocean => "Ocean",
+            GradientPaletteId::Inferno => "Inferno",
+        }
+    }
+}
+
+/// Ordered list of all gradient palette IDs.
+pub const ALL_GRADIENT_PALETTE_IDS: &[GradientPaletteId] = &[
+    GradientPaletteId::Viridis,
+    GradientPaletteId::Cividis,
+    GradientPaletteId::Turbo,
+    GradientPaletteId::Ocean,
+    GradientPaletteId::Inferno,
+];
 
 /// Canvas rendering settings (persisted)
 #[derive(Debug, Clone, Serialize, Deserialize)]

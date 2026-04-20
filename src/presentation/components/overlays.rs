@@ -18,13 +18,6 @@ use super::super::ui::{HoverInfo, RulerMeasurement};
 /// `bottom_offset` shifts the bar up above the status bar / vector player.
 pub fn show_scale_bar(ctx: &Context, zoom: f32, grid_unit: GridUnit, left_offset: f32, bottom_offset: f32) {
     let screen = ctx.screen_rect();
-    let painter = ctx.layer_painter(egui::LayerId::new(
-        egui::Order::Middle,
-        egui::Id::new("scale_bar"),
-    ));
-    let bar_margin = 20.0;
-    let bar_y = screen.bottom() - bottom_offset - bar_margin;
-    let bar_x_start = left_offset + bar_margin + 10.0;
 
     if zoom <= 0.0 {
         return;
@@ -43,14 +36,71 @@ pub fn show_scale_bar(ctx: &Context, zoom: f32, grid_unit: GridUnit, left_offset
         }
     }
     let bar_px = bar_world * zoom;
+
+    let bar_margin = 16.0;
+    let panel_pad_h = 12.0;
+    let panel_pad_v = 8.0;
+    let tick_h = 5.0;
+    let label_font = egui::FontId::proportional(10.0);
+
+    // Compute label text
+    let value = grid_unit.from_mm(bar_world);
+    let label = if value >= 1.0 {
+        format!("{:.0} {}", value, grid_unit.label())
+    } else {
+        format!("{:.2} {}", value, grid_unit.label())
+    };
+
+    // Measure label to size the panel
+    let label_galley = ctx.fonts(|f| f.layout_no_wrap(label.clone(), label_font.clone(), t.text_primary));
+    let label_w = label_galley.size().x;
+    let label_h = label_galley.size().y;
+
+    // Panel dimensions: fit the bar + label
+    let panel_inner_w = bar_px.max(label_w);
+    let panel_w = panel_inner_w + 2.0 * panel_pad_h;
+    let bar_section_h = tick_h * 2.0 + 2.0; // ticks + bar line
+    let panel_h = label_h + 4.0 + bar_section_h + 2.0 * panel_pad_v;
+
+    // Panel position (bottom-left, shifted by offsets)
+    let panel_x = left_offset + bar_margin;
+    let panel_y = screen.bottom() - bottom_offset - bar_margin - panel_h;
+    let panel_rect = egui::Rect::from_min_size(
+        egui::pos2(panel_x, panel_y),
+        egui::vec2(panel_w, panel_h),
+    );
+
+    let painter = ctx.layer_painter(egui::LayerId::new(
+        egui::Order::Middle,
+        egui::Id::new("scale_bar"),
+    ));
+
+    // Background panel
+    painter.rect(
+        panel_rect,
+        Rounding::same(8.0),
+        t.panel_bg_translucent,
+        Stroke::new(
+            1.0,
+            if t.is_dark {
+                Color32::from_rgba_premultiplied(60, 60, 60, 120)
+            } else {
+                Color32::from_rgba_premultiplied(180, 180, 180, 120)
+            },
+        ),
+    );
+
+    // Center content within panel
+    let content_x = panel_rect.center().x - bar_px / 2.0;
+    let bar_y = panel_rect.bottom() - panel_pad_v - tick_h;
+    let bar_x_start = content_x;
     let bar_x_end = bar_x_start + bar_px;
-    let tick_h = 6.0;
     let bar_color = t.text_secondary;
 
     // Bar line
     painter.line_segment(
         [egui::pos2(bar_x_start, bar_y), egui::pos2(bar_x_end, bar_y)],
-        Stroke::new(2.0, bar_color),
+        Stroke::new(1.5, bar_color),
     );
     // Left tick
     painter.line_segment(
@@ -58,7 +108,7 @@ pub fn show_scale_bar(ctx: &Context, zoom: f32, grid_unit: GridUnit, left_offset
             egui::pos2(bar_x_start, bar_y - tick_h),
             egui::pos2(bar_x_start, bar_y + tick_h),
         ],
-        Stroke::new(2.0, bar_color),
+        Stroke::new(1.5, bar_color),
     );
     // Right tick
     painter.line_segment(
@@ -66,21 +116,15 @@ pub fn show_scale_bar(ctx: &Context, zoom: f32, grid_unit: GridUnit, left_offset
             egui::pos2(bar_x_end, bar_y - tick_h),
             egui::pos2(bar_x_end, bar_y + tick_h),
         ],
-        Stroke::new(2.0, bar_color),
+        Stroke::new(1.5, bar_color),
     );
-    // Label
-    let value = grid_unit.from_mm(bar_world);
-    let label = if value >= 1.0 {
-        format!("{:.0} {}", value, grid_unit.label())
-    } else {
-        format!("{:.2} {}", value, grid_unit.label())
-    };
+    // Label (centered above bar)
     painter.text(
-        egui::pos2((bar_x_start + bar_x_end) / 2.0, bar_y - tick_h - 4.0),
+        egui::pos2(panel_rect.center().x, bar_y - tick_h - 4.0),
         egui::Align2::CENTER_BOTTOM,
         label,
-        egui::FontId::proportional(11.0),
-        bar_color,
+        label_font,
+        t.text_primary,
     );
 }
 

@@ -27,7 +27,7 @@ use crate::presentation::{
     create_window, run_event_loop, UiRenderer, ToolMode,
     RulerMeasurement, TabManager, SplitPane,
 };
-use crate::presentation::palette::{ResolvedMode, resolve_mode, resolve_palette};
+use crate::presentation::palette::{ResolvedMode, resolve_mode, resolve_palette, resolve_gradient_stops};
 
 /// State of background file loading
 enum LoadingState {
@@ -78,6 +78,7 @@ pub struct App {
     config: WindowConfig,
     theme_config: crate::application::ports::ThemeConfig,
     canvas_config: crate::application::ports::CanvasConfig,
+    gradient_scale_config: crate::application::ports::GradientScaleConfig,
 }
 
 impl App {
@@ -94,7 +95,12 @@ impl App {
             ..Default::default()
         };
 
-        Ok(Self { config, theme_config: app_config.theme, canvas_config: app_config.canvas })
+        Ok(Self {
+            config,
+            theme_config: app_config.theme,
+            canvas_config: app_config.canvas,
+            gradient_scale_config: app_config.gradient_scale,
+        })
     }
 
     /// Run the application
@@ -173,6 +179,13 @@ impl App {
             state.render.display_options.antialiasing = cc.antialiasing;
         }
 
+        // Apply saved gradient scale settings
+        {
+            let gs = &self.gradient_scale_config;
+            ui.state.gradient_palette_id = gs.gradient_palette;
+            renderer.set_gradient_stops(resolve_gradient_stops(gs.gradient_palette));
+        }
+
         // Create file loader
         let loaders: Vec<Arc<dyn FileLoader>> = vec![Arc::new(IltLoader::new())];
         let load_use_case = Arc::new(LoadToolpathUseCase::new(loaders));
@@ -207,6 +220,12 @@ impl App {
 
         info!("Application started");
         state.needs_redraw = true;
+
+        // Trigger background update check on startup
+        crate::infrastructure::updater::updater::check_for_updates(
+            crate::APP_VERSION,
+            ui.state.update_state.clone(),
+        );
 
         // Run event loop with combined handler
         let load_use_case_clone = load_use_case.clone();
@@ -1738,6 +1757,17 @@ fn render_frame(
         let cm = JsonConfigManager::new();
         if let Ok(mut cfg) = cm.load() {
             cfg.canvas = ui.state.canvas_settings.clone();
+            let _ = cm.save(&cfg);
+        }
+    }
+
+    // Handle gradient scale palette changes
+    if ui_output.gradient_palette_changed {
+        renderer.set_gradient_stops(resolve_gradient_stops(ui.state.gradient_palette_id));
+        state.needs_redraw = true;
+        let cm = JsonConfigManager::new();
+        if let Ok(mut cfg) = cm.load() {
+            cfg.gradient_scale.gradient_palette = ui.state.gradient_palette_id;
             let _ = cm.save(&cfg);
         }
     }

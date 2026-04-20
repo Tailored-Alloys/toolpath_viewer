@@ -122,6 +122,37 @@ Gzip-compressed CLI file.
 3. **Flexibility**: Easy to swap implementations (e.g., different renderers)
 4. **Independence**: Core business logic doesn't depend on frameworks
 
+## Installer
+
+The project includes an Inno Setup-based Windows installer with install, uninstall, and update support.
+
+### Prerequisites
+
+- [Inno Setup 6](https://jrsoftware.org/isdl.php) installed on the build machine
+
+### Building the Installer
+
+```powershell
+# Build release binary + package installer in one step
+.\installer\build_installer.ps1
+
+# Skip rebuild, just repackage the installer
+.\installer\build_installer.ps1 -SkipBuild
+
+# Custom Inno Setup path
+.\installer\build_installer.ps1 -InnoSetupPath "C:\Tools\InnoSetup\ISCC.exe"
+```
+
+The installer will be output to `installer/output/ToolpathViewer_Setup_<version>.exe`.
+
+### Installer Features
+
+- **Install**: Places the app in Program Files with Start Menu shortcuts
+- **Uninstall**: Full removal via Windows Add/Remove Programs
+- **Update**: Detects existing installation and offers to upgrade in-place
+- **File associations**: Optional `.cli` and `.ilt` file association
+- **Desktop shortcut**: Optional desktop icon
+
 ## License
 
 MIT
