@@ -2,7 +2,9 @@ name: Build & Release Installer
 
 on:
   push:
-    branches: [release]
+    branches:
+      - release
+      - 'release/**'
     tags:
       - 'v*'
 
