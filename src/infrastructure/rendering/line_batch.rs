@@ -5,7 +5,6 @@
 
 use gl::types::*;
 use crate::domain::value_objects::{Color, Point2D};
-use log::info;
 use std::mem;
 use std::ptr;
 
@@ -18,13 +17,6 @@ pub struct LineVertex {
 }
 
 impl LineVertex {
-    pub fn new(x: f32, y: f32, color: &Color) -> Self {
-        Self {
-            position: [x, y],
-            color: color.to_array(),
-        }
-    }
-
     pub fn from_point(point: &Point2D, color: &Color) -> Self {
         Self {
             position: [point.x, point.y],
@@ -312,11 +304,6 @@ impl LineBatch {
     /// Get vertex count
     pub fn vertex_count(&self) -> usize {
         self.vertices.len()
-    }
-
-    /// Get segment count
-    pub fn segment_count(&self) -> usize {
-        self.segments.len()
     }
 }
 

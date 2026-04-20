@@ -4,7 +4,7 @@
 //! - File Info: layer vector counts and parameter values
 //! - Controls: keyboard/mouse shortcut reference
 
-use egui::{Context, RichText, Rounding};
+use egui::{Context, RichText};
 
 use crate::presentation::layout::TOOLBAR_HEIGHT;
 use crate::presentation::theme;

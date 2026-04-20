@@ -27,13 +27,6 @@ impl Point2D {
         (dx * dx + dy * dy).sqrt()
     }
 
-    /// Calculate squared distance (avoids sqrt)
-    pub fn distance_squared(&self, other: &Point2D) -> f32 {
-        let dx = self.x - other.x;
-        let dy = self.y - other.y;
-        dx * dx + dy * dy
-    }
-
     /// Linear interpolation to another point
     pub fn lerp(&self, other: &Point2D, t: f32) -> Point2D {
         Point2D {

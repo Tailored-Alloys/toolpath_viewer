@@ -34,23 +34,11 @@ pub const PANEL_GAP: f32 = 8.0;
 /// Width of the right layer slider panel
 pub const LAYER_SLIDER_WIDTH: f32 = 80.0;
 
-/// Width of the left gradient scale panel (used inside sidebar sections)
-pub const GRADIENT_PANEL_WIDTH: f32 = 130.0;
-
 /// Tool panel button size
 pub const TOOL_BTN_SIZE: f32 = 28.0;
 
-/// Tool panel icon size
-pub const TOOL_ICON_SIZE: f32 = 14.0;
-
-/// Tool panel estimated height (buttons + frame padding)
-pub const TOOL_PANEL_HEIGHT: f32 = 44.0;
-
 /// Bottom margin for panels
 pub const BOTTOM_MARGIN: f32 = 16.0;
-
-/// Scale bar height reservation (when visible)
-pub const SCALE_BAR_RESERVE: f32 = 48.0;
 
 /// Scale bar drawing margin from screen edge
 pub const SCALE_BAR_MARGIN: f32 = 20.0;
@@ -240,19 +228,6 @@ pub struct VectorPlayerRegion {
     pub rect: Rect,
     /// Height of the bar
     pub height: f32,
-}
-
-/// Vector slider positioning info (kept for backward compat, unused in new layout)
-#[derive(Debug, Clone)]
-pub struct VectorSliderRegion {
-    /// Position for the egui Area (top-left)
-    pub pos: egui::Pos2,
-    /// Available content height (inside frame, excluding padding)
-    pub content_height: f32,
-    /// Width of the panel
-    pub width: f32,
-    /// Whether to show the goto section
-    pub show_goto: bool,
 }
 
 impl LayoutRegions {

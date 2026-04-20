@@ -10,7 +10,7 @@ use crate::infrastructure::rendering::{
     GridRenderer, LineBatch, LineVertex, ShaderProgram,
     DEFAULT_FRAGMENT_SHADER, DEFAULT_VERTEX_SHADER,
 };
-use log::{debug, info};
+use log::info;
 
 /// Create an orthographic projection matrix
 fn ortho(left: f32, right: f32, bottom: f32, top: f32, near: f32, far: f32) -> [f32; 16] {

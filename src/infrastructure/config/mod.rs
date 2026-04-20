@@ -5,7 +5,7 @@
 use crate::application::ports::{AppConfig, ConfigError, ConfigManager, ConfigResult};
 use std::fs;
 use std::path::PathBuf;
-use log::{debug, info, warn};
+use log::{debug, info};
 
 /// JSON file-based configuration manager
 pub struct JsonConfigManager {
@@ -22,11 +22,6 @@ impl JsonConfigManager {
         Self {
             config_path: config_dir.join("config.json"),
         }
-    }
-
-    /// Create with a specific config path
-    pub fn with_path(path: PathBuf) -> Self {
-        Self { config_path: path }
     }
 
     /// Get the config directory
@@ -111,7 +106,6 @@ mod dirs {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::env;
 
     #[test]
     fn test_default_config() {

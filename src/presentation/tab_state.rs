@@ -185,14 +185,6 @@ impl TabManager {
         self.active_tab_id.and_then(|id| self.tabs.get_mut(&id))
     }
 
-    pub fn split_partner(&self) -> Option<&TabState> {
-        self.split_partner_id.and_then(|id| self.tabs.get(&id))
-    }
-
-    pub fn tab(&self, file_id: usize) -> Option<&TabState> {
-        self.tabs.get(&file_id)
-    }
-
     pub fn tab_mut(&mut self, file_id: usize) -> Option<&mut TabState> {
         self.tabs.get_mut(&file_id)
     }
@@ -241,19 +233,6 @@ impl TabManager {
         }
     }
 
-    /// Initialize right pane state from a specific tab (e.g. on entering split mode).
-    pub fn initialize_right_pane_from(&mut self, file_id: usize, stack: &SliceStack) {
-        if let Some(tab) = self.tabs.get(&file_id) {
-            self.split_right_view_state = Some(tab.view_state.clone());
-            self.split_right_navigation = Some(tab.navigation.clone());
-        } else {
-            let mut nav = NavigateLayersUseCase::new();
-            nav.initialize(stack);
-            self.split_right_view_state = Some(ViewState::default());
-            self.split_right_navigation = Some(nav);
-        }
-    }
-
     // ── Overlay visibility helpers ──
 
     /// Toggle a file's visibility in overlay mode.
@@ -285,10 +264,5 @@ impl TabManager {
         if let Some(id) = self.active_tab_id {
             self.overlay_visible_ids.insert(id);
         }
-    }
-
-    /// Get the set of file IDs visible in overlay mode.
-    pub fn overlay_visible_set(&self) -> &HashSet<usize> {
-        &self.overlay_visible_ids
     }
 }

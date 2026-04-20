@@ -66,7 +66,7 @@ fn color_to_egui(c: &Color) -> Color32 {
 
 pub fn show_tab_bar(
     ctx: &Context,
-    tab_bar_rect: &Rect,
+    _tab_bar_rect: &Rect,
     tabs: &[TabInfo],
     view_mode: ViewMode,
     has_multiple_files: bool,
@@ -353,7 +353,7 @@ fn draw_single_tab(
 
     // ── Allocate a fixed-width region for the entire tab ──
     // This avoids layout shifts when hover shows/hides the close button.
-    let tab_id = ui.id().with("tab").with(tab.file_id);
+    let _tab_id = ui.id().with("tab").with(tab.file_id);
 
     // Use a simple allocate + manual painting approach to avoid flicker.
     // We measure content width first to know how wide the tab should be.

@@ -60,29 +60,14 @@ impl SliceStack {
         }
     }
 
-    /// Add a layer to the stack
-    pub fn add_layer(&mut self, layer: Layer) {
-        self.layers.push(layer);
-    }
-
     /// Get a layer by index
     pub fn get_layer(&self, index: usize) -> Option<&Layer> {
         self.layers.get(index)
     }
 
-    /// Get a mutable layer by index
-    pub fn get_layer_mut(&mut self, index: usize) -> Option<&mut Layer> {
-        self.layers.get_mut(index)
-    }
-
     /// Get the number of layers
     pub fn layer_count(&self) -> usize {
         self.layers.len()
-    }
-
-    /// Check if the stack is empty
-    pub fn is_empty(&self) -> bool {
-        self.layers.is_empty()
     }
 
     /// Get all unique Z heights
@@ -179,10 +164,12 @@ mod tests {
 
     #[test]
     fn test_slice_stack_stats() {
-        let mut stack = SliceStack::new("Test");
-        stack.add_layer(Layer::new(0, 0.1));
-        stack.add_layer(Layer::new(1, 0.2));
-        stack.add_layer(Layer::new(2, 0.3));
+        let layers = vec![
+            Layer::new(0, 0.1),
+            Layer::new(1, 0.2),
+            Layer::new(2, 0.3),
+        ];
+        let stack = SliceStack::with_layers("Test", layers);
 
         let stats = stack.stats();
         assert_eq!(stats.layer_count, 3);

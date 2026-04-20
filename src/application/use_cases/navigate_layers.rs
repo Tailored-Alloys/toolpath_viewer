@@ -124,26 +124,6 @@ impl NavigateLayersUseCase {
         }
     }
 
-    /// Go to layer by Z height (finds closest)
-    pub fn go_to_z(&mut self, z: f32) -> bool {
-        if self.state.z_heights.is_empty() {
-            return false;
-        }
-
-        // Find closest Z height
-        let (closest_idx, _) = self.state.z_heights
-            .iter()
-            .enumerate()
-            .min_by(|(_, a), (_, b)| {
-                let da = (*a - z).abs();
-                let db = (*b - z).abs();
-                da.partial_cmp(&db).unwrap()
-            })
-            .unwrap();
-
-        self.go_to_layer(closest_idx)
-    }
-
     /// Jump forward by N layers
     pub fn jump_forward(&mut self, count: usize) -> bool {
         let target = (self.state.current_index + count).min(self.state.total_layers.saturating_sub(1));
@@ -154,11 +134,6 @@ impl NavigateLayersUseCase {
     pub fn jump_backward(&mut self, count: usize) -> bool {
         let target = self.state.current_index.saturating_sub(count);
         self.go_to_layer(target)
-    }
-
-    /// Get current layer from a slice stack
-    pub fn get_current_layer<'a>(&self, stack: &'a SliceStack) -> Option<&'a Layer> {
-        stack.get_layer(self.state.current_index)
     }
 }
 
@@ -173,11 +148,8 @@ mod tests {
     use super::*;
 
     fn create_test_stack() -> SliceStack {
-        let mut stack = SliceStack::new("Test");
-        for i in 0..10 {
-            stack.add_layer(Layer::new(i, i as f32 * 0.1));
-        }
-        stack
+        let layers: Vec<Layer> = (0..10).map(|i| Layer::new(i, i as f32 * 0.1)).collect();
+        SliceStack::with_layers("Test", layers)
     }
 
     #[test]

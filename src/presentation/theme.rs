@@ -96,23 +96,6 @@ pub fn active() -> ActiveTheme {
     theme_lock().read().unwrap().clone()
 }
 
-// ── Legacy const aliases (delegate to active theme) ──────────────────────
-// Components that already import these names will keep compiling.  The values
-// come from the light-default palette, matching the old hard-coded constants.
-// New code should call `theme::active()` instead.
-
-pub const TOOLBAR_BG: Color32 = Color32::from_rgb(245, 245, 245);
-pub const TOOLBAR_BORDER: Color32 = Color32::from_rgb(200, 200, 200);
-pub const ACCENT: Color32 = Color32::from_rgb(25, 118, 210);
-pub const ACCENT_LIGHT: Color32 = Color32::from_rgb(187, 222, 251);
-pub const TOGGLE_ACTIVE_BG: Color32 = Color32::from_rgb(200, 230, 255);
-pub const TOGGLE_INACTIVE_BG: Color32 = Color32::from_rgb(230, 230, 230);
-pub const TEXT_PRIMARY: Color32 = Color32::from_rgb(33, 33, 33);
-pub const TEXT_SECONDARY: Color32 = Color32::from_rgb(97, 97, 97);
-pub const PANEL_BG: Color32 = Color32::from_rgb(255, 255, 255);
-pub const PANEL_SHADOW: Color32 = Color32::from_rgba_premultiplied(0, 0, 0, 40);
-pub const PANEL_BG_TRANSLUCENT: Color32 = Color32::from_rgba_premultiplied(255, 255, 255, 230);
-
 // ── Font setup ───────────────────────────────────────────────────────────
 
 /// Set up fonts including the Lucide icon font.

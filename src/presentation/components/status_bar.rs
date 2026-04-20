@@ -4,7 +4,7 @@
 //! - Left: zoom level, current layer/Z, mouse world-coordinates
 //! - Right: unit dropdowns (distance, time, power)
 
-use egui::{Context, RichText, Rounding, Stroke};
+use egui::{Context, RichText, Stroke};
 
 use crate::application::ports::{GlobalUnits, GridUnit, PowerUnit, TimeUnit};
 use crate::presentation::layout::StatusBarRegion;

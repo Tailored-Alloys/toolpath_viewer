@@ -38,14 +38,6 @@ impl LoadToolpathUseCase {
                 .to_string(),
         ))
     }
-
-    /// Get all supported extensions
-    pub fn supported_extensions(&self) -> Vec<&str> {
-        self.loaders
-            .iter()
-            .flat_map(|l| l.supported_extensions().iter().copied())
-            .collect()
-    }
 }
 
 #[cfg(test)]

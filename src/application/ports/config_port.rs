@@ -3,7 +3,6 @@
 //! Interface for configuration management.
 
 use serde::{Deserialize, Serialize};
-use crate::domain::value_objects::Color;
 use thiserror::Error;
 
 /// Errors that can occur during config operations

@@ -36,7 +36,7 @@ pub fn show_toolbar(
     show_controls: &mut bool,
     show_preferences: &mut bool,
     has_multiple_files: bool,
-    has_tab_bar: bool,
+    _has_tab_bar: bool,
 ) -> ToolbarOutput {
     let output = ToolbarOutput::default();
     let t = theme::active();

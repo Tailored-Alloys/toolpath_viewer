@@ -46,49 +46,9 @@ impl Layer {
         }
     }
 
-    /// Create a layer with the given vectors
-    pub fn with_vectors(index: usize, z_height: f32, vectors: Vec<Vector>) -> Self {
-        Self {
-            index,
-            z_height,
-            thickness: 0.0,
-            vectors,
-            part_id: None,
-            params: Vec::new(),
-        }
-    }
-
     /// Add a vector to this layer
     pub fn add_vector(&mut self, vector: Vector) {
         self.vectors.push(vector);
-    }
-
-    /// Get vectors of a specific type
-    pub fn get_vectors_by_type(&self, vector_type: VectorType) -> Vec<&Vector> {
-        self.vectors
-            .iter()
-            .filter(|v| v.vector_type == vector_type)
-            .collect()
-    }
-
-    /// Get all boundary vectors
-    pub fn boundaries(&self) -> Vec<&Vector> {
-        self.get_vectors_by_type(VectorType::Boundary)
-    }
-
-    /// Get all contour vectors
-    pub fn contours(&self) -> Vec<&Vector> {
-        self.get_vectors_by_type(VectorType::Contour)
-    }
-
-    /// Get all hatch vectors
-    pub fn hatches(&self) -> Vec<&Vector> {
-        self.get_vectors_by_type(VectorType::Hatch)
-    }
-
-    /// Get all depth contour vectors
-    pub fn depth_contours(&self) -> Vec<&Vector> {
-        self.get_vectors_by_type(VectorType::DepthContour)
     }
 
     /// Get the bounding box of all vectors in this layer

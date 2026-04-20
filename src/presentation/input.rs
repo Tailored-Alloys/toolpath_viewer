@@ -156,16 +156,6 @@ impl InputState {
             self.mouse_pos.y - self.prev_mouse_pos.y,
         )
     }
-
-    /// Check if any mouse button is pressed
-    pub fn any_mouse_pressed(&self) -> bool {
-        self.left_pressed || self.middle_pressed || self.right_pressed
-    }
-
-    /// Check if dragging (mouse moved while button pressed)
-    pub fn is_dragging(&self) -> bool {
-        self.any_mouse_pressed() && self.mouse_delta().distance_to(&Point2D::zero()) > 1.0
-    }
 }
 
 /// Parse a keyboard event into an action

@@ -20,7 +20,6 @@ pub mod tab_bar;
 pub use toolbar::*;
 pub use layer_slider::*;
 pub use vector_slider::*;
-pub use gradient_scale::*;
 pub use tool_panel::*;
 pub use overlays::*;
 pub use popups::*;

@@ -6,7 +6,7 @@
 
 use egui::{Color32, Context, RichText, Rounding, Stroke, Vec2};
 
-use crate::application::ports::{CanvasConfig, PaletteId, ThemeMode, ALL_PALETTE_IDS};
+use crate::application::ports::{CanvasConfig, PaletteId, ThemeMode};
 use crate::presentation::palette::{
     self, ResolvedMode, ThemePalette, resolve_mode, resolve_palette,
 };

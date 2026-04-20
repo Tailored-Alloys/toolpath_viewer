@@ -5,7 +5,7 @@
 use anyhow::Result;
 use glutin::{
     config::{Config, ConfigTemplateBuilder, GlConfig},
-    context::{ContextApi, ContextAttributesBuilder, NotCurrentGlContext, PossiblyCurrentContext},
+    context::{ContextApi, ContextAttributesBuilder, PossiblyCurrentContext},
     display::GetGlDisplay,
     prelude::*,
     surface::{Surface, SurfaceAttributesBuilder, WindowSurface},
@@ -21,7 +21,7 @@ use winit::{
 };
 use std::num::NonZeroU32;
 use std::sync::Arc;
-use log::{debug, info};
+use log::info;
 
 use crate::presentation::{InputState, InputAction, key_to_action, MouseButton};
 

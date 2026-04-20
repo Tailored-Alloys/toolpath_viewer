@@ -11,23 +11,23 @@ use winit::event::WindowEvent;
 use winit::event_loop::EventLoop;
 
 use crate::application::dto::FileCollection;
-use crate::application::ports::{ColorMode, ConfigManager, DisplayOptions, FileLoader, ParameterMode, Renderer, ViewMode};
+use crate::application::ports::{ColorMode, ConfigManager, FileLoader, ParameterMode, Renderer, ViewMode};
 use crate::application::use_cases::{
     LoadToolpathUseCase, NavigateLayersUseCase, RenderViewUseCase, DisplayOption,
     ColorScheme,
 };
 use crate::domain::entities::{Toolpath, VectorType};
 use crate::domain::services::find_nearest_vector;
-use crate::domain::value_objects::{Bounds2D, Color, Point2D};
+use crate::domain::value_objects::{Bounds2D, Point2D};
 use crate::infrastructure::config::JsonConfigManager;
 use crate::infrastructure::file_adapters::IltLoader;
 use crate::infrastructure::rendering::GlRenderer;
 use crate::presentation::{
     AppEvent, AppWindow, InputAction, MouseButton, ParamRanges, WindowConfig,
     create_window, run_event_loop, UiRenderer, ToolMode,
-    RulerMeasurement, SnapshotFormat, TabManager, SplitPane,
+    RulerMeasurement, TabManager, SplitPane,
 };
-use crate::presentation::palette::{self, ResolvedMode, ThemePalette, resolve_mode, resolve_palette};
+use crate::presentation::palette::{ResolvedMode, resolve_mode, resolve_palette};
 
 /// State of background file loading
 enum LoadingState {
@@ -71,14 +71,6 @@ impl Default for AppState {
             last_frame_time: None,
         }
     }
-}
-
-/// Combined application context holding all mutable state
-pub struct AppContext {
-    pub state: AppState,
-    pub renderer: GlRenderer,
-    pub ui: UiRenderer,
-    pub load_use_case: LoadToolpathUseCase,
 }
 
 /// Main application
@@ -365,8 +357,8 @@ fn start_background_load(
 fn finalize_load(
     loaded_files: Vec<(PathBuf, Toolpath, ParamRanges)>,
     state: &mut AppState,
-    vp_w: f32,
-    vp_h: f32,
+    _vp_w: f32,
+    _vp_h: f32,
 ) -> Result<ParamRanges> {
     for (path, toolpath, _ranges) in loaded_files {
         let stats = toolpath.slice_stack.stats();
@@ -1418,6 +1410,7 @@ fn render_frame(
             state.render.view_state = tab.view_state.clone();
         }
         ui.state.active_tab_file = Some(switch_id);
+        ui.state.hover_info = None; // clear stale tooltip from previous tab
         state.needs_redraw = true;
     }
     if let Some(close_id) = ui_output.close_tab {
@@ -1525,6 +1518,7 @@ fn render_frame(
     if let Some(right_id) = ui_output.split_right_switch {
         state.tab_manager.split_right_active_id = Some(right_id);
         state.tab_manager.split_partner_id = Some(right_id);
+        ui.state.hover_info = None; // clear stale tooltip from previous pane file
         state.needs_redraw = true;
     }
 
@@ -2064,6 +2058,12 @@ fn render_frame(
         trigger_snapshot(renderer, state, &ui_output.tool_state);
     }
 
+    // Re-evaluate hover tooltip with fresh viewport rect (fixes stale wants_pointer
+    // after view-mode switches where egui reports pointer-over-UI for 1-2 extra frames).
+    if !ui.wants_pointer() {
+        update_hover_info(state, ui, window);
+    }
+
     // 3. Paint egui overlay on top of GL content
     ui.paint(&window.window);
 
@@ -2223,13 +2223,17 @@ fn update_hover_info(
     let opts = &state.render.display_options;
     let threshold = 5.0 / view_ref.zoom.max(0.001);
 
-    // Determine which Z to use (right pane may have independent navigation)
+    // Determine which Z to use — must match the render path's Z source:
+    //   render_frame uses active_tab().navigation for the main/left pane,
+    //   and split_right_navigation for the independent right pane.
     let current_z = if use_right_independent {
         state.tab_manager.split_right_navigation.as_ref()
             .map(|nav| nav.state().current_z)
             .unwrap_or_else(|| state.navigation.state().current_z)
     } else {
-        state.navigation.state().current_z
+        state.tab_manager.active_tab()
+            .map(|t| t.navigation.state().current_z)
+            .unwrap_or_else(|| state.navigation.state().current_z)
     };
 
     // In split mode, only hit-test against the file shown in this pane
@@ -2250,8 +2254,21 @@ fn update_hover_info(
         } else {
             vec![]
         }
+    } else if ui.state.view_mode == ViewMode::Tab {
+        // Tab mode: only hit-test the active tab's file (matches render logic)
+        let active_id = state.tab_manager.active_tab_id
+            .or_else(|| state.files.files.first().map(|f| f.id));
+        if let Some(aid) = active_id {
+            state.files.files.iter().filter(|f| f.id == aid).collect()
+        } else {
+            vec![]
+        }
     } else {
-        state.files.visible_files().collect()
+        // Overlay mode: respect overlay_visible_ids (matches render logic)
+        let overlay_ids = &state.tab_manager.overlay_visible_ids;
+        state.files.visible_files()
+            .filter(|f| overlay_ids.is_empty() || overlay_ids.contains(&f.id))
+            .collect()
     };
 
     // Search across target files' layers at current Z
@@ -2347,7 +2364,7 @@ fn trigger_snapshot(
 fn export_svg(
     path: &std::path::Path,
     state: &AppState,
-    tool_state: &crate::presentation::ToolState,
+    _tool_state: &crate::presentation::ToolState,
 ) -> Result<()> {
     use std::io::Write;
     use crate::domain::entities::VectorType;

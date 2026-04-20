@@ -45,25 +45,6 @@ impl GridRenderer {
         }
     }
 
-    /// Prepare grid geometry for the current view.
-    pub fn prepare(
-        &mut self,
-        view: &ViewState,
-        viewport_width: f32,
-        viewport_height: f32,
-    ) {
-        self.prepare_with_colors(
-            view,
-            viewport_width,
-            viewport_height,
-            Color::new(0.0, 0.0, 0.0, 0.08),
-            Color::new(0.0, 0.0, 0.0, 0.20),
-            1.0,
-            1.5,
-            1.0,
-        );
-    }
-
     /// Prepare grid geometry with custom minor/major colors and line widths.
     pub fn prepare_with_colors(
         &mut self,

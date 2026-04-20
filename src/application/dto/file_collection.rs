@@ -3,7 +3,7 @@
 //! Manages a collection of loaded files with helpers for multi-file operations.
 
 use std::path::PathBuf;
-use crate::domain::entities::{FileEntry, Layer, Toolpath};
+use crate::domain::entities::{FileEntry, Toolpath};
 use crate::domain::value_objects::Point2D;
 use crate::presentation::ParamRanges;
 
@@ -77,11 +77,6 @@ impl FileCollection {
         self.files.len()
     }
 
-    /// Check if any visible files have layers
-    pub fn has_visible_layers(&self) -> bool {
-        self.visible_files().any(|f| !f.toolpath.is_empty())
-    }
-
     /// Compute a sorted, deduplicated list of Z-heights across all visible files.
     /// Uses fixed-point keys to merge Z-heights within 0.01µm tolerance.
     pub fn merged_z_heights(&self) -> Vec<f32> {
@@ -94,12 +89,6 @@ impl FileCollection {
             }
         }
         z_set.into_iter().map(|k| k as f32 / 100_000.0).collect()
-    }
-
-    /// Get the layer closest to a given Z-height for a specific file
-    pub fn get_layer_at_z(&self, file_id: usize, z: f32) -> Option<&Layer> {
-        let file = self.files.iter().find(|f| f.id == file_id)?;
-        file.toolpath.slice_stack.get_layer_by_z(z)
     }
 
     /// Compute merged bounding box across all visible files
@@ -164,10 +153,5 @@ impl FileCollection {
             speed: if hs { Some((smin, smax)) } else { None },
             wait_time: if hw { Some((wmin, wmax)) } else { None },
         }
-    }
-
-    /// Clear all files
-    pub fn clear(&mut self) {
-        self.files.clear();
     }
 }

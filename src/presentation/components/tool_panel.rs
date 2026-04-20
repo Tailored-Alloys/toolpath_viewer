@@ -27,8 +27,8 @@ pub fn show_tool_panel(
     ctx: &Context,
     region: &ToolPanelRegion,
     tool_mode: &mut ToolMode,
-    ruler_start: &mut Option<crate::domain::value_objects::Point2D>,
-    ruler_end: &mut Option<crate::domain::value_objects::Point2D>,
+    _ruler_start: &mut Option<crate::domain::value_objects::Point2D>,
+    _ruler_end: &mut Option<crate::domain::value_objects::Point2D>,
     ruler_measurements: &mut Vec<super::super::ui::RulerMeasurement>,
     show_grid: &mut bool,
 ) -> ToolPanelOutput {
@@ -58,7 +58,7 @@ pub fn show_tool_panel(
                         let btn_size = Vec2::new(28.0, 28.0);
                         let icon_sz = 14.0;
 
-                        let mut tool_btn = |ui: &mut egui::Ui,
+                        let tool_btn = |ui: &mut egui::Ui,
                                             icon: &str,
                                             tooltip: &str,
                                             active: bool|

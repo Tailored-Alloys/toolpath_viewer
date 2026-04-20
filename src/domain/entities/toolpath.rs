@@ -51,16 +51,6 @@ impl Toolpath {
             parts: Vec::new(),
         }
     }
-
-    /// Get the number of layers
-    pub fn layer_count(&self) -> usize {
-        self.slice_stack.layer_count()
-    }
-
-    /// Check if toolpath is empty
-    pub fn is_empty(&self) -> bool {
-        self.slice_stack.is_empty()
-    }
 }
 
 impl Default for Toolpath {

@@ -2,21 +2,15 @@
 //!
 //! Interface for rendering operations.
 
-use crate::domain::entities::{Layer, SliceStack, Vector};
+use crate::domain::entities::{Layer, Vector};
 use crate::domain::value_objects::{Bounds2D, Color, Point2D};
 use thiserror::Error;
 
 /// Errors that can occur during rendering
 #[derive(Debug, Error)]
 pub enum RenderError {
-    #[error("OpenGL error: {0}")]
-    OpenGLError(String),
-    
     #[error("Shader compilation error: {0}")]
     ShaderError(String),
-    
-    #[error("Buffer allocation error: {0}")]
-    BufferError(String),
     
     #[error("Invalid state: {0}")]
     InvalidState(String),
@@ -303,8 +297,6 @@ pub struct ViewState {
     pub center: Point2D,
     /// Zoom level (pixels per unit)
     pub zoom: f32,
-    /// Rotation angle in radians
-    pub rotation: f32,
 }
 
 impl Default for ViewState {
@@ -312,7 +304,6 @@ impl Default for ViewState {
         Self {
             center: Point2D::zero(),
             zoom: 1.0,
-            rotation: 0.0,
         }
     }
 }
@@ -420,21 +411,4 @@ pub trait Renderer: Send {
     
     /// Get current viewport dimensions
     fn viewport_size(&self) -> (u32, u32);
-}
-
-/// Port for batch rendering (optimization)
-pub trait BatchRenderer: Renderer {
-    /// Upload layer data to GPU buffers for efficient rendering
-    fn upload_layer(&mut self, layer: &Layer) -> RenderResult<()>;
-    
-    /// Render a previously uploaded layer
-    fn render_uploaded_layer(
-        &mut self,
-        layer_index: usize,
-        view: &ViewState,
-        options: &DisplayOptions,
-    ) -> RenderResult<()>;
-    
-    /// Clear all uploaded data
-    fn clear_uploaded(&mut self);
 }

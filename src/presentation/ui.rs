@@ -13,8 +13,8 @@ use std::sync::Arc;
 
 use crate::application::ports::{ColorMode, GlobalUnits, PaletteId, ParameterMode, ThemeMode, ViewMode};
 
-use super::layout::{LayoutRegions, VisibilityFlags, TOOLBAR_HEIGHT, TOOLBAR_BOTTOM, TAB_BAR_HEIGHT};
-use super::palette::{self, ThemePalette, ResolvedMode};
+use super::layout::{LayoutRegions, VisibilityFlags, TOOLBAR_BOTTOM, TAB_BAR_HEIGHT};
+use super::palette::ThemePalette;
 use super::theme;
 use super::components;
 use super::tab_state::TabManager;
@@ -102,8 +102,6 @@ pub struct ToolState {
     pub show_scale_bar: bool,
     /// Snapshot requested this frame
     pub snapshot_requested: bool,
-    /// Snapshot format requested
-    pub snapshot_format: SnapshotFormat,
 }
 
 impl Default for ToolState {
@@ -118,16 +116,8 @@ impl Default for ToolState {
             show_grid: true,
             show_scale_bar: true,
             snapshot_requested: false,
-            snapshot_format: SnapshotFormat::Png,
         }
     }
-}
-
-/// Snapshot export format
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SnapshotFormat {
-    Png,
-    Svg,
 }
 
 /// Hover information for the vector under the cursor
@@ -227,10 +217,6 @@ pub struct UiOutput {
     pub fit_view_requested: bool,
     /// Whether vector-by-vector view is enabled
     pub vector_view_enabled: bool,
-    /// Current vector index (0-based) when vector view is active
-    pub vector_index: usize,
-    /// Whether vector playback is active
-    pub vector_view_playing: bool,
     /// Whether theme/palette changed this frame
     pub theme_changed: bool,
     /// Whether canvas settings changed this frame
@@ -309,8 +295,6 @@ pub struct UiState {
     pub active_sidebar_tab: SidebarTab,
     /// Dynamic sidebar content panel width (user-resizable)
     pub sidebar_content_width: f32,
-    /// Layer jump input value (text field for direct entry)
-    pub layer_jump_value: String,
     /// Tool state
     pub tool_state: ToolState,
     /// Global unit settings
@@ -402,7 +386,6 @@ impl Default for UiState {
             sidebar_open: false,
             active_sidebar_tab: SidebarTab::default(),
             sidebar_content_width: super::layout::SIDEBAR_WIDTH,
-            layer_jump_value: String::new(),
             tool_state: ToolState::default(),
             global_units: GlobalUnits::default(),
             tool_state_zoom: 1.0,
@@ -436,44 +419,6 @@ impl Default for UiState {
             focus_layer_input: false,
             active_split_pane: SplitPane::default(),
         }
-    }
-}
-
-impl UiState {
-    /// Reset all state to defaults for a new file load, preserving user
-    /// preferences like global_units.
-    pub fn reset_for_new_file(&mut self) {
-        let preserved_units = self.global_units.clone();
-        let preserved_mode = self.theme_mode;
-        let preserved_palette = self.active_palette_id;
-        let preserved_light_palette = self.light_palette_id;
-        let preserved_dark_palette = self.dark_palette_id;
-        let preserved_pal_data = self.active_palette.clone();
-        let preserved_sys_dark = self.system_is_dark;
-        let preserved_show_file_panel = self.sidebar_open;
-        let preserved_color_mode = self.color_mode;
-        let preserved_view_mode = self.view_mode;
-        let preserved_active_tab = self.active_tab_file;
-        let preserved_split_ratio = self.split_ratio;
-        let preserved_sidebar_tab = self.active_sidebar_tab;
-        let preserved_sidebar_width = self.sidebar_content_width;
-        let preserved_canvas = self.canvas_settings.clone();
-        *self = UiState::default();
-        self.global_units = preserved_units;
-        self.theme_mode = preserved_mode;
-        self.active_palette_id = preserved_palette;
-        self.light_palette_id = preserved_light_palette;
-        self.dark_palette_id = preserved_dark_palette;
-        self.active_palette = preserved_pal_data;
-        self.system_is_dark = preserved_sys_dark;
-        self.sidebar_open = preserved_show_file_panel;
-        self.active_sidebar_tab = preserved_sidebar_tab;
-        self.sidebar_content_width = preserved_sidebar_width;
-        self.canvas_settings = preserved_canvas;
-        self.color_mode = preserved_color_mode;
-        self.view_mode = preserved_view_mode;
-        self.active_tab_file = preserved_active_tab;
-        self.split_ratio = preserved_split_ratio;
     }
 }
 
@@ -602,7 +547,7 @@ impl UiRenderer {
         let regions = LayoutRegions::compute(screen, &flags);
 
         // Track component outputs
-        let mut open_file_requested = false;
+        let open_file_requested = false;
         let mut zoom_in_requested = false;
         let mut zoom_out_requested = false;
         let mut fit_view_requested = false;
@@ -1346,6 +1291,8 @@ impl UiRenderer {
         // ── Handle tab bar actions ──
         if let Some(new_mode) = view_mode_changed {
             self.state.view_mode = new_mode;
+            // Clear stale hover tooltip from previous view mode immediately
+            self.state.hover_info = None;
         }
 
         // ── Sync UiState changes back → active TabState ──
@@ -1409,8 +1356,6 @@ impl UiRenderer {
             zoom_out_requested,
             fit_view_requested,
             vector_view_enabled: self.state.vector_view_enabled,
-            vector_index: self.state.current_vector_index,
-            vector_view_playing: self.state.vector_view_playing,
             theme_changed: self.state.theme_changed,
             canvas_changed: self.state.canvas_changed,
             active_palette: self.state.active_palette.clone(),
@@ -1462,10 +1407,5 @@ impl UiRenderer {
             &clipped_primitives,
             &full_output.textures_delta,
         );
-    }
-
-    /// Destroy the UI renderer
-    pub fn destroy(&mut self) {
-        self.painter.destroy();
     }
 }

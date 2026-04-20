@@ -143,7 +143,7 @@ pub fn show_sidebar(
 fn show_toolpaths_tab(
     ui: &mut egui::Ui,
     files: &FileCollection,
-    color_mode: ColorMode,
+    _color_mode: ColorMode,
     view_mode: ViewMode,
     active_tab_file: Option<usize>,
     output: &mut SidebarOutput,
@@ -195,7 +195,9 @@ fn show_toolpaths_tab(
                 Vec2::new(available_w, row_h),
                 egui::Sense::click(),
             );
-            let is_hovered = row_resp.hovered();
+            // Use rect_contains_pointer instead of row_resp.hovered() to avoid
+            // hover flicker when child widgets (close button) steal the hover.
+            let is_hovered = ui.rect_contains_pointer(row_rect);
 
             // ── Row background fill ──
             let row_fill = if is_active_tab {
