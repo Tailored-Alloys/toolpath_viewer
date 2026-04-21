@@ -1,9 +1,9 @@
 //! Vector Player Component
 //!
 //! Floating video-player-style bar centered at the bottom of the viewport:
-//! |◀ First| ▶ Play/Pause | Last ▶| [═══ slider ═══] | 12/450 | 1x Speed |
+//! |◀ First| ▶ Play/Pause | Last ▶| [DragValue input] | 1x Speed |
 
-use egui::{Color32, Context, RichText, Rounding, Stroke, Vec2};
+use egui::{Color32, Context, DragValue, RichText, Rounding, Slider, Stroke, Vec2};
 use lucide_icons::Icon as LucideIcon;
 
 use crate::presentation::layout::VectorPlayerRegion;
@@ -108,100 +108,69 @@ pub fn show_vector_player(
 
                 ui.add_space(4.0);
 
-                // ── Horizontal slider (track + thumb) ──
-                let available_w = ui.available_width() - 120.0; // reserve space for counter + speed
-                let track_h = 6.0;
-                let thumb_radius = 8.0;
-                let slider_w = available_w.max(80.0);
+                // ── Horizontal egui Slider (themed) ──
+                {
+                    let available_w = ui.available_width() - 100.0; // reserve space for input + speed
+                    let slider_w = available_w.max(80.0);
+                    let mut slider_val = (current_vector + 1) as i32;
+                    let slider_widget = Slider::new(&mut slider_val, 1..=(total_vectors as i32))
+                        .show_value(false);
 
-                let (slider_rect, slider_resp) = ui.allocate_exact_size(
-                    egui::vec2(slider_w, 26.0),
-                    egui::Sense::click_and_drag(),
-                );
+                    let slider_resp = ui.scope(|ui| {
+                        let rail_color = if t.is_dark {
+                            Color32::from_rgb(60, 60, 60)
+                        } else {
+                            Color32::from_rgb(210, 210, 210)
+                        };
+                        let accent = Color32::from_rgb(255, 167, 38); // orange accent for vector player
+                        let accent_active = Color32::from_rgb(245, 124, 0);
+                        let handle_radius = 7.0;
 
-                let track_rect = egui::Rect::from_center_size(
-                    slider_rect.center(),
-                    egui::vec2(slider_w - thumb_radius * 2.0, track_h),
-                );
+                        // Inactive: rail appearance
+                        ui.style_mut().visuals.widgets.inactive.bg_fill = rail_color;
+                        ui.style_mut().visuals.widgets.inactive.fg_stroke = Stroke::new(0.0, Color32::TRANSPARENT);
+                        ui.style_mut().visuals.widgets.inactive.rounding = Rounding::same(3.0);
+                        ui.style_mut().visuals.widgets.inactive.expansion = 0.0;
+                        // Hovered
+                        ui.style_mut().visuals.widgets.hovered.bg_fill = accent;
+                        ui.style_mut().visuals.widgets.hovered.fg_stroke = Stroke::new(2.0, accent);
+                        ui.style_mut().visuals.widgets.hovered.rounding = Rounding::same(handle_radius);
+                        ui.style_mut().visuals.widgets.hovered.expansion = 2.0;
+                        // Active (dragging)
+                        ui.style_mut().visuals.widgets.active.bg_fill = accent_active;
+                        ui.style_mut().visuals.widgets.active.fg_stroke = Stroke::new(2.0, accent_active);
+                        ui.style_mut().visuals.widgets.active.rounding = Rounding::same(handle_radius);
+                        ui.style_mut().visuals.widgets.active.expansion = 2.0;
+                        // Slider rail sizing
+                        ui.style_mut().spacing.slider_rail_height = 4.0;
 
-                // Compute thumb position
-                let usable_w = track_rect.width();
-                let frac = if max_vector > 0 {
-                    current_vector as f32 / max_vector as f32
-                } else {
-                    0.0
-                };
-                let thumb_x = track_rect.left() + frac * usable_w;
-                let thumb_center_y = track_rect.center().y;
+                        ui.add_sized(egui::vec2(slider_w, 26.0), slider_widget)
+                    }).inner;
 
-                // Handle drag / click
-                if slider_resp.dragged() || slider_resp.clicked() {
-                    if let Some(pos) = slider_resp.interact_pointer_pos() {
-                        let clamped_x = pos.x.clamp(track_rect.left(), track_rect.right());
-                        let new_frac = (clamped_x - track_rect.left()) / usable_w;
-                        let target = (new_frac * max_vector as f32).round() as usize;
-                        output.new_vector = target.min(max_vector);
+                    if slider_resp.changed() {
+                        let target = (slider_val as usize)
+                            .saturating_sub(1)
+                            .min(max_vector);
+                        output.new_vector = target;
                         output.vector_changed = true;
                     }
                 }
 
-                let painter = ui.painter();
+                ui.add_space(4.0);
 
-                // Track background
-                painter.rect_filled(
-                    track_rect,
-                    Rounding::same(track_h / 2.0),
-                    if t.is_dark { Color32::from_rgb(60, 60, 60) } else { Color32::from_rgb(220, 220, 220) },
-                );
-
-                // Filled portion (left to thumb)
-                if thumb_x > track_rect.left() + 1.0 {
-                    let filled = egui::Rect::from_min_max(
-                        track_rect.left_top(),
-                        egui::pos2(thumb_x, track_rect.bottom()),
-                    );
-                    painter.rect_filled(
-                        filled,
-                        Rounding::same(track_h / 2.0),
-                        Color32::from_rgb(255, 167, 38),
-                    );
+                // ── Vector DragValue input ──
+                let mut jump_val = (current_vector + 1) as i64;
+                let dv = DragValue::new(&mut jump_val)
+                    .clamp_range(1..=(total_vectors as i64))
+                    .speed(1.0)
+                    .suffix(format!("/{}", total_vectors));
+                if ui.add(dv).changed() {
+                    let target = (jump_val as usize)
+                        .saturating_sub(1)
+                        .min(max_vector);
+                    output.new_vector = target;
+                    output.vector_changed = true;
                 }
-
-                // Thumb
-                let is_active = slider_resp.dragged();
-                let is_hovered = slider_resp.hovered();
-                let thumb_color = if is_active {
-                    Color32::from_rgb(245, 124, 0)
-                } else if is_hovered {
-                    Color32::from_rgb(255, 167, 38)
-                } else if t.is_dark {
-                    Color32::from_rgb(180, 180, 180)
-                } else {
-                    Color32::WHITE
-                };
-                let thumb_stroke_color = if is_active || is_hovered {
-                    Color32::from_rgb(245, 124, 0)
-                } else if t.is_dark {
-                    Color32::from_rgb(100, 100, 100)
-                } else {
-                    Color32::from_rgb(160, 160, 160)
-                };
-
-                painter.circle_filled(egui::pos2(thumb_x, thumb_center_y), thumb_radius, thumb_color);
-                painter.circle_stroke(
-                    egui::pos2(thumb_x, thumb_center_y),
-                    thumb_radius,
-                    Stroke::new(1.5, thumb_stroke_color),
-                );
-
-                ui.add_space(8.0);
-
-                // ── Vector counter ──
-                ui.label(
-                    RichText::new(format!("{}/{}", current_vector + 1, total_vectors))
-                        .size(11.0)
-                        .color(t.text_primary),
-                );
 
                 ui.add_space(4.0);
 

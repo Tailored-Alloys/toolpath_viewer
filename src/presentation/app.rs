@@ -791,7 +791,6 @@ fn handle_event(
         }
 
         AppEvent::KeyAction(action) => {
-            // Skip shortcuts when egui has keyboard focus (e.g. text fields)
             if !ui.wants_keyboard() {
                 handle_key_action(action, state, window, ui, load_use_case);
             }
@@ -846,6 +845,10 @@ fn handle_key_action(
     match action {
         InputAction::NextLayer => {
             if state.navigation.next_layer() {
+                let idx = state.navigation.state().current_index;
+                if let Some(tab) = state.tab_manager.active_tab_mut() {
+                    tab.navigation.go_to_layer(idx);
+                }
                 state.needs_redraw = true;
                 window.request_redraw();
                 update_window_title(window, state);
@@ -854,6 +857,10 @@ fn handle_key_action(
 
         InputAction::PrevLayer => {
             if state.navigation.previous_layer() {
+                let idx = state.navigation.state().current_index;
+                if let Some(tab) = state.tab_manager.active_tab_mut() {
+                    tab.navigation.go_to_layer(idx);
+                }
                 state.needs_redraw = true;
                 window.request_redraw();
                 update_window_title(window, state);
@@ -862,6 +869,10 @@ fn handle_key_action(
 
         InputAction::JumpForward => {
             if state.navigation.jump_forward(10) {
+                let idx = state.navigation.state().current_index;
+                if let Some(tab) = state.tab_manager.active_tab_mut() {
+                    tab.navigation.go_to_layer(idx);
+                }
                 state.needs_redraw = true;
                 window.request_redraw();
                 update_window_title(window, state);
@@ -870,6 +881,10 @@ fn handle_key_action(
 
         InputAction::JumpBackward => {
             if state.navigation.jump_backward(10) {
+                let idx = state.navigation.state().current_index;
+                if let Some(tab) = state.tab_manager.active_tab_mut() {
+                    tab.navigation.go_to_layer(idx);
+                }
                 state.needs_redraw = true;
                 window.request_redraw();
                 update_window_title(window, state);
@@ -878,6 +893,10 @@ fn handle_key_action(
 
         InputAction::FirstLayer => {
             if state.navigation.first_layer() {
+                let idx = state.navigation.state().current_index;
+                if let Some(tab) = state.tab_manager.active_tab_mut() {
+                    tab.navigation.go_to_layer(idx);
+                }
                 state.needs_redraw = true;
                 window.request_redraw();
                 update_window_title(window, state);
@@ -886,6 +905,10 @@ fn handle_key_action(
 
         InputAction::LastLayer => {
             if state.navigation.last_layer() {
+                let idx = state.navigation.state().current_index;
+                if let Some(tab) = state.tab_manager.active_tab_mut() {
+                    tab.navigation.go_to_layer(idx);
+                }
                 state.needs_redraw = true;
                 window.request_redraw();
                 update_window_title(window, state);
@@ -1615,6 +1638,11 @@ fn render_frame(
     } else {
         false
     };
+    // Always keep global navigation in sync with the active tab so keyboard
+    // shortcuts start from the correct position after slider interaction.
+    if state.navigation.state().current_index != ui_output.layer_index {
+        state.navigation.go_to_layer(ui_output.layer_index);
+    }
     if layer_changed {
         // The tab's navigation was already updated in run_ui sync-back
         state.navigation.go_to_layer(ui_output.layer_index);

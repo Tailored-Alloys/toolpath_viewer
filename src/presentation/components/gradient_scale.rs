@@ -4,19 +4,19 @@
 //! Layout (matching reference design):
 //! - Palette icon at top — click opens dropdown to pick colormap
 //! - Mode label (e.g. "Power (W)")
-//! - Max value — click to edit inline
+//! - Max value — DragValue input
 //! - Tall gradient bar
-//! - Min value — click to edit inline
+//! - Min value — DragValue input
 //! - Reset button
 
-use egui::{Color32, Context, RichText, Rounding, Stroke, TextEdit, Vec2};
+use egui::{Color32, Context, DragValue, RichText, Rounding, Stroke, Vec2};
 use lucide_icons::Icon as LucideIcon;
 
 use crate::application::ports::{GlobalUnits, GradientPaletteId, ParameterMode, ALL_GRADIENT_PALETTE_IDS};
 use crate::domain::value_objects::Color;
 use crate::presentation::layout::GradientRegion;
 use crate::presentation::palette;
-use crate::presentation::theme;
+use crate::presentation::theme::{self, floating_panel_frame};
 
 use super::super::ui::ParamRanges;
 
@@ -84,8 +84,8 @@ pub fn show_gradient_scale(
 fn render_scale_overlay(
     ctx: &Context,
     area_id: &str,
-    editing_max_key: &str,
-    editing_min_key: &str,
+    _editing_max_key: &str,
+    _editing_min_key: &str,
     region: &GradientRegion,
     mode_label: &str,
     stops: &[(f32, Color)],
@@ -101,15 +101,26 @@ fn render_scale_overlay(
 ) {
     let t = theme::active();
 
-    // Persistent editing state stored in egui's per-frame memory
-    let editing_max_id = egui::Id::new(editing_max_key);
-    let editing_min_id = egui::Id::new(editing_min_key);
-    // Staging text buffers: edits accumulate here, only committed on Enter / click-away
-    let staging_max_id = egui::Id::new(format!("{}_staging", editing_max_key));
-    let staging_min_id = egui::Id::new(format!("{}_staging", editing_min_key));
-    // Track whether we already requested focus (to avoid re-requesting each frame)
-    let focus_max_id = egui::Id::new(format!("{}_focus", editing_max_key));
-    let focus_min_id = egui::Id::new(format!("{}_focus", editing_min_key));
+    // Conversion factor: display = convert_display(raw), so factor = convert_display(1) / 1
+    let factor = if hi.abs() > f32::EPSILON {
+        convert_display(hi) / hi
+    } else if lo.abs() > f32::EPSILON {
+        convert_display(lo) / lo
+    } else {
+        1.0
+    };
+
+    let content_h = region.content_height;
+
+    // Fixed heights for controls (matching layer_slider layout)
+    let icon_h = 24.0;
+    let label_h = 16.0;
+    let input_h = 22.0;
+    let reset_h = 20.0;
+    let spacing = 6.0;
+    // Height consumed by icon + label + max input + min input + reset + spacing
+    let controls_h = icon_h + label_h + input_h * 2.0 + reset_h + spacing * 6.0;
+    let bar_h = (content_h - controls_h).max(60.0);
 
     egui::Area::new(egui::Id::new(area_id))
         .fixed_pos(region.pos)
@@ -117,137 +128,99 @@ fn render_scale_overlay(
         .interactable(true)
         .movable(false)
         .show(ctx, |ui| {
-            egui::Frame::none()
-                .fill(t.panel_bg_translucent)
-                .rounding(Rounding::same(10.0))
-                .shadow(egui::epaint::Shadow {
-                    offset: egui::vec2(0.0, 2.0),
-                    blur: 8.0,
-                    spread: 0.0,
-                    color: t.panel_shadow,
-                })
-                .inner_margin(egui::Margin::symmetric(10.0, 10.0))
+            floating_panel_frame()
                 .show(ui, |ui| {
-                    ui.spacing_mut().item_spacing = egui::vec2(0.0, 4.0);
+                    ui.spacing_mut().item_spacing = egui::vec2(0.0, 0.0);
 
-                    let panel_inner_w = region.width - 20.0; // 10+10 margin
+                    let panel_inner_w = region.width - 16.0; // 8+8 margin from floating_panel_frame
                     ui.set_max_width(panel_inner_w);
+                    let (content_rect, _) = ui.allocate_exact_size(
+                        egui::vec2(panel_inner_w, content_h),
+                        egui::Sense::hover(),
+                    );
+
+                    let center_x = content_rect.center().x;
+                    let mut y_cursor = content_rect.top();
 
                     // ── Palette icon (top, centered) ──
-                    ui.vertical_centered(|ui| {
-                        let icon_str = LucideIcon::Palette.unicode().to_string();
-                        let icon_btn = egui::Button::new(
-                            RichText::new(&icon_str).size(16.0).color(t.text_secondary),
-                        )
-                        .fill(Color32::TRANSPARENT)
-                        .stroke(Stroke::NONE)
-                        .min_size(Vec2::new(24.0, 24.0));
+                    let icon_rect = egui::Rect::from_center_size(
+                        egui::pos2(center_x, y_cursor + icon_h / 2.0),
+                        egui::vec2(44.0, icon_h),
+                    );
+                    let icon_str = LucideIcon::Palette.unicode().to_string();
+                    let icon_btn = egui::Button::new(
+                        RichText::new(&icon_str).size(16.0).color(t.text_secondary),
+                    )
+                    .fill(Color32::TRANSPARENT)
+                    .stroke(Stroke::NONE)
+                    .min_size(Vec2::new(24.0, icon_h));
 
-                        let popup_id = ui.id().with("palette_popup");
-                        let icon_resp = ui.add(icon_btn).on_hover_text("Change color palette");
-                        if icon_resp.clicked() {
-                            ui.memory_mut(|m| m.toggle_popup(popup_id));
-                        }
+                    let popup_id = ui.id().with("palette_popup");
+                    let icon_resp = ui.put(icon_rect, icon_btn)
+                        .on_hover_text("Change color palette");
+                    if icon_resp.clicked() {
+                        ui.memory_mut(|m| m.toggle_popup(popup_id));
+                    }
 
-                        // Dropdown popup below the icon
-                        egui::popup_below_widget(ui, popup_id, &icon_resp, |ui| {
-                            ui.set_min_width(100.0);
-                            for &pid in ALL_GRADIENT_PALETTE_IDS {
-                                let selected = *palette_id == pid;
-                                let label = if selected {
-                                    RichText::new(format!("● {}", pid.label())).size(11.0).strong()
-                                } else {
-                                    RichText::new(format!("  {}", pid.label())).size(11.0)
-                                };
-                                if ui.selectable_label(selected, label).clicked() {
-                                    *palette_id = pid;
-                                    *palette_changed = true;
-                                    ui.memory_mut(|m| m.toggle_popup(popup_id));
-                                }
+                    // Dropdown popup below the icon
+                    egui::popup_below_widget(ui, popup_id, &icon_resp, |ui| {
+                        ui.set_min_width(100.0);
+                        for &pid in ALL_GRADIENT_PALETTE_IDS {
+                            let selected = *palette_id == pid;
+                            let label = if selected {
+                                RichText::new(format!("● {}", pid.label())).size(11.0).strong()
+                            } else {
+                                RichText::new(format!("  {}", pid.label())).size(11.0)
+                            };
+                            if ui.selectable_label(selected, label).clicked() {
+                                *palette_id = pid;
+                                *palette_changed = true;
+                                ui.memory_mut(|m| m.toggle_popup(popup_id));
                             }
-                        });
+                        }
                     });
+                    y_cursor += icon_h + spacing;
 
                     // ── Mode label (centered) ──
-                    ui.vertical_centered(|ui| {
-                        ui.label(
-                            RichText::new(mode_label)
-                                .size(10.0)
-                                .strong()
-                                .color(t.text_primary),
-                        );
-                    });
+                    ui.painter().text(
+                        egui::pos2(center_x, y_cursor + label_h / 2.0),
+                        egui::Align2::CENTER_CENTER,
+                        mode_label,
+                        egui::FontId::proportional(10.0),
+                        t.text_primary,
+                    );
+                    y_cursor += label_h + spacing;
 
-                    ui.add_space(2.0);
-
-                    // ── Max value (clickable → text input, commits on Enter/click-away) ──
-                    let editing_max = ui.memory(|m| m.data.get_temp::<bool>(editing_max_id).unwrap_or(false));
-                    ui.vertical_centered(|ui| {
-                        if editing_max {
-                            let mut buf = ui.memory(|m| {
-                                m.data.get_temp::<String>(staging_max_id).unwrap_or_default()
-                            });
-                            let resp = ui.add(
-                                TextEdit::singleline(&mut buf)
-                                    .desired_width(panel_inner_w)
-                                    .font(egui::TextStyle::Small)
-                                    .horizontal_align(egui::Align::Center),
-                            );
-                            // Filter to numeric characters only
-                            buf.retain(|c| c.is_ascii_digit() || c == '.' || c == '-');
-                            ui.memory_mut(|m| m.data.insert_temp(staging_max_id, buf.clone()));
-                            // Request focus once on the first frame
-                            let did_focus = ui.memory(|m| m.data.get_temp::<bool>(focus_max_id).unwrap_or(false));
-                            if !did_focus {
-                                resp.request_focus();
-                                ui.memory_mut(|m| m.data.insert_temp(focus_max_id, true));
-                            }
-                            // Cancel on Escape
-                            if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
-                                ui.memory_mut(|m| {
-                                    m.data.insert_temp(editing_max_id, false);
-                                    m.data.insert_temp(focus_max_id, false);
-                                });
-                            }
-                            // Commit on Enter / click-away
-                            else if resp.lost_focus() {
-                                if let Ok(v) = buf.trim().parse::<f32>() {
-                                    *filter_max = v.clamp(*filter_min, hi);
-                                }
-                                ui.memory_mut(|m| {
-                                    m.data.insert_temp(editing_max_id, false);
-                                    m.data.insert_temp(focus_max_id, false);
-                                });
-                            }
-                        } else {
-                            let display_val = convert_display(*filter_max);
-                            let label_resp = ui.add(
-                                egui::Label::new(
-                                    RichText::new(format!("{:.2}{}", display_val, unit_suffix))
-                                        .size(10.0)
-                                        .color(t.text_secondary),
-                                )
-                                .sense(egui::Sense::click()),
-                            );
-                            if label_resp.on_hover_cursor(egui::CursorIcon::Text).clicked() {
-                                let display_val = convert_display(*filter_max);
-                                ui.memory_mut(|m| {
-                                    m.data.insert_temp(editing_max_id, true);
-                                    m.data.insert_temp(staging_max_id, format!("{:.2}", display_val));
-                                    m.data.insert_temp(focus_max_id, false);
-                                });
-                            }
+                    // ── Max value (DragValue input, centered) ──
+                    let max_rect = egui::Rect::from_center_size(
+                        egui::pos2(center_x, y_cursor + input_h / 2.0),
+                        egui::vec2(panel_inner_w, input_h),
+                    );
+                    {
+                        let suffix_owned = unit_suffix.to_owned();
+                        let mut display_val = convert_display(*filter_max);
+                        let dv = DragValue::new(&mut display_val)
+                            .speed(drag_speed * factor.abs().max(0.001))
+                            .clamp_range(convert_display(*filter_min)..=convert_display(hi))
+                            .custom_formatter(|v, _| format!("{:.2}", v))
+                            .suffix(suffix_owned);
+                        let resp = ui.put(max_rect, dv);
+                        if resp.changed() {
+                            let raw = if factor.abs() > f32::EPSILON {
+                                display_val / factor
+                            } else {
+                                display_val
+                            };
+                            *filter_max = raw.clamp(*filter_min, hi);
                         }
-                    });
+                    }
+                    y_cursor += input_h + spacing;
 
-                    ui.add_space(2.0);
-
-                    // ── Gradient bar (full width, fills remaining height) ──
-                    let bar_h = (region.content_height - 130.0).max(60.0);
-                    let bar_w = panel_inner_w;
-                    let (bar_rect, _) = ui.allocate_exact_size(
+                    // ── Gradient bar (centered, narrower than panel) ──
+                    let bar_w = (panel_inner_w - 8.0).max(16.0); // 4px padding each side
+                    let bar_rect = egui::Rect::from_center_size(
+                        egui::pos2(center_x, y_cursor + bar_h / 2.0),
                         egui::vec2(bar_w, bar_h),
-                        egui::Sense::hover(),
                     );
 
                     // Draw gradient segments
@@ -283,96 +256,60 @@ fn render_scale_overlay(
                         Rounding::same(3.0),
                         Stroke::new(1.0, border_color),
                     );
+                    y_cursor += bar_h + spacing;
 
-                    ui.add_space(2.0);
-
-                    // ── Min value (clickable → text input, commits on Enter/click-away) ──
-                    let editing_min = ui.memory(|m| m.data.get_temp::<bool>(editing_min_id).unwrap_or(false));
-                    ui.vertical_centered(|ui| {
-                        if editing_min {
-                            let mut buf = ui.memory(|m| {
-                                m.data.get_temp::<String>(staging_min_id).unwrap_or_default()
-                            });
-                            let resp = ui.add(
-                                TextEdit::singleline(&mut buf)
-                                    .desired_width(panel_inner_w)
-                                    .font(egui::TextStyle::Small)
-                                    .horizontal_align(egui::Align::Center),
-                            );
-                            // Filter to numeric characters only
-                            buf.retain(|c| c.is_ascii_digit() || c == '.' || c == '-');
-                            ui.memory_mut(|m| m.data.insert_temp(staging_min_id, buf.clone()));
-                            // Request focus once on the first frame
-                            let did_focus = ui.memory(|m| m.data.get_temp::<bool>(focus_min_id).unwrap_or(false));
-                            if !did_focus {
-                                resp.request_focus();
-                                ui.memory_mut(|m| m.data.insert_temp(focus_min_id, true));
-                            }
-                            // Cancel on Escape
-                            if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
-                                ui.memory_mut(|m| {
-                                    m.data.insert_temp(editing_min_id, false);
-                                    m.data.insert_temp(focus_min_id, false);
-                                });
-                            }
-                            // Commit on Enter / click-away
-                            else if resp.lost_focus() {
-                                if let Ok(v) = buf.trim().parse::<f32>() {
-                                    *filter_min = v.clamp(lo, *filter_max);
-                                }
-                                ui.memory_mut(|m| {
-                                    m.data.insert_temp(editing_min_id, false);
-                                    m.data.insert_temp(focus_min_id, false);
-                                });
-                            }
-                        } else {
-                            let display_val = convert_display(*filter_min);
-                            let label_resp = ui.add(
-                                egui::Label::new(
-                                    RichText::new(format!("{:.2}{}", display_val, unit_suffix))
-                                        .size(10.0)
-                                        .color(t.text_secondary),
-                                )
-                                .sense(egui::Sense::click()),
-                            );
-                            if label_resp.on_hover_cursor(egui::CursorIcon::Text).clicked() {
-                                let display_val = convert_display(*filter_min);
-                                ui.memory_mut(|m| {
-                                    m.data.insert_temp(editing_min_id, true);
-                                    m.data.insert_temp(staging_min_id, format!("{:.2}", display_val));
-                                    m.data.insert_temp(focus_min_id, false);
-                                });
-                            }
-                        }
-                    });
-
-                    ui.add_space(4.0);
-
-                    // ── Reset button (centered, compact, no wrap) ──
-                    ui.vertical_centered(|ui| {
-                        let reset_icon = LucideIcon::RotateCcw.unicode().to_string();
-                        let reset_btn = egui::Button::new(
-                            RichText::new(format!("{} Reset", reset_icon))
-                                .size(9.0)
-                                .color(t.text_secondary),
-                        )
-                        .fill(Color32::TRANSPARENT)
-                        .stroke(Stroke::new(
-                            1.0,
-                            if t.is_dark {
-                                Color32::from_rgb(70, 70, 70)
+                    // ── Min value (DragValue input, centered) ──
+                    let min_rect = egui::Rect::from_center_size(
+                        egui::pos2(center_x, y_cursor + input_h / 2.0),
+                        egui::vec2(panel_inner_w, input_h),
+                    );
+                    {
+                        let suffix_owned = unit_suffix.to_owned();
+                        let mut display_val = convert_display(*filter_min);
+                        let dv = DragValue::new(&mut display_val)
+                            .speed(drag_speed * factor.abs().max(0.001))
+                            .clamp_range(convert_display(lo)..=convert_display(*filter_max))
+                            .custom_formatter(|v, _| format!("{:.2}", v))
+                            .suffix(suffix_owned);
+                        let resp = ui.put(min_rect, dv);
+                        if resp.changed() {
+                            let raw = if factor.abs() > f32::EPSILON {
+                                display_val / factor
                             } else {
-                                Color32::from_rgb(200, 200, 200)
-                            },
-                        ))
-                        .rounding(Rounding::same(4.0))
-                        .min_size(Vec2::new(0.0, 18.0))
-                        .wrap(false);
-                        if ui.add(reset_btn).on_hover_text("Reset to data range").clicked() {
-                            *filter_min = lo;
-                            *filter_max = hi;
+                                display_val
+                            };
+                            *filter_min = raw.clamp(lo, *filter_max);
                         }
-                    });
+                    }
+                    y_cursor += input_h + spacing;
+
+                    // ── Reset button (centered, compact) ──
+                    let reset_rect = egui::Rect::from_center_size(
+                        egui::pos2(center_x, y_cursor + reset_h / 2.0),
+                        egui::vec2(panel_inner_w, reset_h),
+                    );
+                    let reset_icon = LucideIcon::RotateCcw.unicode().to_string();
+                    let reset_btn = egui::Button::new(
+                        RichText::new(format!("{} Reset", reset_icon))
+                            .size(9.0)
+                            .color(t.text_secondary),
+                    )
+                    .fill(Color32::TRANSPARENT)
+                    .stroke(Stroke::new(
+                        1.0,
+                        if t.is_dark {
+                            Color32::from_rgb(70, 70, 70)
+                        } else {
+                            Color32::from_rgb(200, 200, 200)
+                        },
+                    ))
+                    .rounding(Rounding::same(4.0))
+                    .min_size(Vec2::new(0.0, 18.0))
+                    .wrap(false);
+                    if ui.put(reset_rect, reset_btn).on_hover_text("Reset to data range").clicked() {
+                        *filter_min = lo;
+                        *filter_max = hi;
+                    }
                 });
         });
 }

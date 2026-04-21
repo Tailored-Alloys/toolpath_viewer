@@ -32,7 +32,7 @@ pub const PANEL_MARGIN: f32 = 12.0;
 pub const PANEL_GAP: f32 = 8.0;
 
 /// Width of the right layer slider panel
-pub const LAYER_SLIDER_WIDTH: f32 = 80.0;
+pub const LAYER_SLIDER_WIDTH: f32 = 68.0;
 
 /// Tool panel button size
 pub const TOOL_BTN_SIZE: f32 = 28.0;
@@ -63,9 +63,6 @@ pub const VECTOR_PLAYER_HEIGHT: f32 = 36.0;
 
 /// Compact toolbar width threshold
 pub const COMPACT_TOOLBAR_THRESHOLD: f32 = 900.0;
-
-/// Minimum height for layer slider content to show goto section
-pub const GOTO_SECTION_MIN_HEIGHT: f32 = 250.0;
 
 /// Minimum height for gradient ticks to be visible
 pub const GRADIENT_TICKS_MIN_HEIGHT: f32 = 350.0;
@@ -196,8 +193,6 @@ pub struct LayerSliderRegion {
     pub content_height: f32,
     /// Width of the panel
     pub width: f32,
-    /// Whether to show the goto section
-    pub show_goto: bool,
 }
 
 /// Gradient panel positioning info (used for viewport overlay)
@@ -214,7 +209,7 @@ pub struct GradientRegion {
 }
 
 /// Width of the gradient scale overlay panel
-pub const GRADIENT_SCALE_WIDTH: f32 = 60.0;
+pub const GRADIENT_SCALE_WIDTH: f32 = 80.0;
 
 /// Status bar positioning info
 #[derive(Debug, Clone)]
@@ -354,8 +349,6 @@ impl LayoutRegions {
             let available_h = (viewport_bottom - slider_top - BOTTOM_MARGIN).max(120.0);
             let frame_overhead = 16.0;
             let content_h = available_h - frame_overhead;
-            let show_goto = content_h > GOTO_SECTION_MIN_HEIGHT;
-
             Some(LayerSliderRegion {
                 pos: egui::pos2(
                     screen.right() - PANEL_MARGIN - LAYER_SLIDER_WIDTH,
@@ -363,7 +356,6 @@ impl LayoutRegions {
                 ),
                 content_height: content_h,
                 width: LAYER_SLIDER_WIDTH,
-                show_goto,
             })
         } else {
             None

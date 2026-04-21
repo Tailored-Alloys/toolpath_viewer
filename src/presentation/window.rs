@@ -335,7 +335,13 @@ where
 
                             if let Some(action) = key_to_action(key_str, ctrl, shift) {
                                 event_handler(&mut app_window, AppEvent::KeyAction(action), raw_event);
+                            } else {
+                                // No shortcut match: forward to egui for text input
+                                event_handler(&mut app_window, AppEvent::EguiEvent, raw_event);
                             }
+                        } else {
+                            // Key release: forward to egui for text input handling
+                            event_handler(&mut app_window, AppEvent::EguiEvent, raw_event);
                         }
                     }
 
