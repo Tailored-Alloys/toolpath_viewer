@@ -61,6 +61,9 @@ pub fn show_update_notification(
         UpdateState::ReadyToInstall(_) => {
             show_ready_banner(ctx, &t, &mut output);
         }
+        UpdateState::Installing => {
+            show_installing_banner(ctx, &t);
+        }
         UpdateState::Error(msg) => {
             show_error_banner(ctx, msg, &t, dismissed);
         }
@@ -234,6 +237,33 @@ fn show_ready_banner(
                 }
             });
         });
+}
+
+fn show_installing_banner(ctx: &Context, t: &theme::ActiveTheme) {
+    egui::Area::new(egui::Id::new("update_notification"))
+        .anchor(egui::Align2::RIGHT_BOTTOM, egui::vec2(-MARGIN_RIGHT, -MARGIN_BOTTOM))
+        .order(egui::Order::Foreground)
+        .interactable(false)
+        .show(ctx, |ui| {
+            banner_frame(t, t.accent).show(ui, |ui| {
+                ui.set_max_width(BANNER_WIDTH - 24.0);
+
+                ui.label(
+                    RichText::new("⏳ Installing Update...")
+                        .size(13.0)
+                        .strong()
+                        .color(t.accent),
+                );
+                ui.add_space(4.0);
+                ui.label(
+                    RichText::new("If Windows SmartScreen appears, click\n\"More info\" → \"Run anyway\" to proceed.")
+                        .size(11.0)
+                        .color(t.text_secondary),
+                );
+            });
+        });
+
+    ctx.request_repaint();
 }
 
 fn show_error_banner(

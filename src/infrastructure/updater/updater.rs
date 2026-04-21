@@ -57,6 +57,8 @@ pub enum UpdateState {
     Downloading(f32),
     /// Download complete, ready to install
     ReadyToInstall(PathBuf),
+    /// Installer has been launched, waiting for it to close us
+    Installing,
     /// An error occurred
     Error(String),
 }
@@ -165,11 +167,17 @@ pub fn download_and_install(update_info: &UpdateInfo, shared_state: SharedUpdate
     });
 }
 
-/// Launch the downloaded installer and exit the app.
-pub fn launch_installer(path: &std::path::Path) -> anyhow::Result<()> {
+/// Launch the downloaded installer.
+///
+/// Does NOT use /SILENT because unsigned executables are blocked by
+/// Windows SmartScreen in silent mode — the user must click
+/// "More info → Run anyway".  The installer's `CloseApplications=force`
+/// setting will close this running instance automatically, and the
+/// `[Run]` post-install entry will re-launch the new version.
+pub fn launch_installer(path: &std::path::Path, shared_state: SharedUpdateState) -> anyhow::Result<()> {
     info!("Launching installer: {:?}", path);
 
-    // Detach the installer process so it survives our exit.
+    // Detach the installer process so it is independent of us.
     #[cfg(target_os = "windows")]
     {
         use std::os::windows::process::CommandExt;
@@ -177,7 +185,7 @@ pub fn launch_installer(path: &std::path::Path) -> anyhow::Result<()> {
         const CREATE_NEW_PROCESS_GROUP: u32 = 0x00000200;
 
         std::process::Command::new(path)
-            .args(["/SILENT", "/CLOSEAPPLICATIONS", "/RESTARTAPPLICATIONS"])
+            .args(["/UPDATE", "/CLOSEAPPLICATIONS", "/RESTARTAPPLICATIONS"])
             .creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP)
             .spawn()
             .map_err(|e| {
@@ -189,7 +197,6 @@ pub fn launch_installer(path: &std::path::Path) -> anyhow::Result<()> {
     #[cfg(not(target_os = "windows"))]
     {
         std::process::Command::new(path)
-            .args(["--silent"])
             .spawn()
             .map_err(|e| {
                 error!("Failed to spawn installer: {}", e);
@@ -197,12 +204,13 @@ pub fn launch_installer(path: &std::path::Path) -> anyhow::Result<()> {
             })?;
     }
 
-    // Give the installer a moment to initialise before we exit
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    // Transition to Installing state — the installer will close us via
+    // CloseApplications=force and re-launch after install.
+    if let Ok(mut s) = shared_state.lock() {
+        *s = UpdateState::Installing;
+    }
 
-    // Exit so the installer can replace the binary.
-    // The [Run] section in the .iss will re-launch the app after install.
-    std::process::exit(0);
+    Ok(())
 }
 
 // ── Internal helpers ─────────────────────────────────────────────────────

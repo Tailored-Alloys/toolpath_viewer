@@ -99,13 +99,34 @@ Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#StringChang
 [Code]
 // ============================================================
 // Update detection: if already installed, offer to update
+// When launched with /UPDATE (from the in-app updater), skip
+// the confirmation dialog and proceed directly.
 // ============================================================
+
+function IsUpdateMode(): Boolean;
+var
+  I: Integer;
+begin
+  Result := False;
+  for I := 1 to ParamCount do
+  begin
+    if CompareText(ParamStr(I), '/UPDATE') = 0 then
+    begin
+      Result := True;
+      Exit;
+    end;
+  end;
+end;
+
 function InitializeSetup(): Boolean;
 var
   InstalledVersion: String;
-  ResultCode: Integer;
 begin
   Result := True;
+
+  // When launched from the in-app updater, skip all confirmation dialogs
+  if IsUpdateMode() then
+    Exit;
 
   // Check if previous version is installed
   if RegQueryStringValue(HKLM, 'Software\Microsoft\Windows\CurrentVersion\Uninstall\{{E7A3F1B2-4D5C-6E8F-9A0B-1C2D3E4F5A6B}_is1',
