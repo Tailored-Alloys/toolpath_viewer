@@ -25,15 +25,17 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Cache cargo registry & build
+      - name: Cache cargo registry
         uses: actions/cache@v4
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-cargo-
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-registry-
+
+      - name: Clean previous build artifacts
+        run: cargo clean --release
 
       - name: Build release binary
         run: cargo build --release
@@ -67,6 +69,10 @@ jobs:
           body: |
             ## Toolpath Viewer ${{ steps.version.outputs.TAG }}
 
+            ### Changes
+            - Bug Fixes
+            - Minor UI Updates
+
             ### Installation
             Download `ToolpathViewer_Setup_${{ steps.version.outputs.VERSION }}.exe` and run the installer.
 
@@ -74,8 +80,10 @@ jobs:
             You can also download and run the installer — it will upgrade your existing installation.
           draft: false
           prerelease: false
+          make_latest: true
           files: |
             installer/output/ToolpathViewer_Setup_${{ steps.version.outputs.VERSION }}.exe
             target/release/toolpath_viewer.exe
+          fail_on_unmatched_files: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
