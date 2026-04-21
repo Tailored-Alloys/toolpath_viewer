@@ -1288,7 +1288,9 @@ impl UiRenderer {
                 }
                 if notif_out.install_requested {
                     if let crate::infrastructure::updater::updater::UpdateState::ReadyToInstall(ref path) = current_state {
-                        let _ = crate::infrastructure::updater::updater::launch_installer(path);
+                        if let Err(e) = crate::infrastructure::updater::updater::launch_installer(path) {
+                            log::error!("Failed to launch installer: {}", e);
+                        }
                     }
                 }
                 if notif_out.view_release {

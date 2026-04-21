@@ -93,8 +93,8 @@ Root: HKA; Subkey: "Software\Classes\ToolpathViewer.ilt\DefaultIcon"; ValueType:
 Root: HKA; Subkey: "Software\Classes\ToolpathViewer.ilt\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\{#MyAppExeName}"" ""%1"""; Tasks: fileassoc_ilt
 
 [Run]
-; Option to launch after install
-Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#StringChange(MyAppName, '&', '&&')}}"; Flags: nowait postinstall skipifsilent
+; Launch after install (including silent/update installs)
+Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#StringChange(MyAppName, '&', '&&')}}"; Flags: nowait postinstall
 
 [Code]
 // ============================================================

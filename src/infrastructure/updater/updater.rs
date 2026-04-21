@@ -168,12 +168,40 @@ pub fn download_and_install(update_info: &UpdateInfo, shared_state: SharedUpdate
 /// Launch the downloaded installer and exit the app.
 pub fn launch_installer(path: &std::path::Path) -> anyhow::Result<()> {
     info!("Launching installer: {:?}", path);
-    // Run the installer with /SILENT for automatic upgrade, /CLOSEAPPLICATIONS to
-    // handle the running instance.
-    std::process::Command::new(path)
-        .args(["/SILENT", "/CLOSEAPPLICATIONS"])
-        .spawn()?;
-    // Exit the current application so the installer can replace the binary
+
+    // Detach the installer process so it survives our exit.
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        const DETACHED_PROCESS: u32 = 0x00000008;
+        const CREATE_NEW_PROCESS_GROUP: u32 = 0x00000200;
+
+        std::process::Command::new(path)
+            .args(["/SILENT", "/CLOSEAPPLICATIONS", "/RESTARTAPPLICATIONS"])
+            .creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP)
+            .spawn()
+            .map_err(|e| {
+                error!("Failed to spawn installer: {}", e);
+                anyhow::anyhow!("Failed to spawn installer: {}", e)
+            })?;
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        std::process::Command::new(path)
+            .args(["--silent"])
+            .spawn()
+            .map_err(|e| {
+                error!("Failed to spawn installer: {}", e);
+                anyhow::anyhow!("Failed to spawn installer: {}", e)
+            })?;
+    }
+
+    // Give the installer a moment to initialise before we exit
+    std::thread::sleep(std::time::Duration::from_millis(500));
+
+    // Exit so the installer can replace the binary.
+    // The [Run] section in the .iss will re-launch the app after install.
     std::process::exit(0);
 }
 
