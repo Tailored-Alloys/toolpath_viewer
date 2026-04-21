@@ -8,7 +8,7 @@
 //! - Presentation: User interface and event handling
 
 /// Application version string
-pub const APP_VERSION: &str = "v1.0.0";
+pub const APP_VERSION: &str = "v1.2.1";
 /// Developer attribution
 pub const APP_DEVELOPER: &str = "Developed by Tailored Alloys";
 
