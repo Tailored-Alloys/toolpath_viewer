@@ -5,7 +5,7 @@
 use anyhow::Result;
 use glutin::{
     config::{Config, ConfigTemplateBuilder, GlConfig},
-    context::{ContextApi, ContextAttributesBuilder, NotCurrentGlContext, PossiblyCurrentContext},
+    context::{ContextApi, ContextAttributesBuilder, PossiblyCurrentContext},
     display::GetGlDisplay,
     prelude::*,
     surface::{Surface, SurfaceAttributesBuilder, WindowSurface},
@@ -21,7 +21,7 @@ use winit::{
 };
 use std::num::NonZeroU32;
 use std::sync::Arc;
-use log::{debug, info};
+use log::info;
 
 use crate::presentation::{InputState, InputAction, key_to_action, MouseButton};
 
@@ -63,6 +63,8 @@ pub enum AppEvent {
     KeyAction(InputAction),
     /// File dropped
     FileDropped(String),
+    /// OS theme changed (dark/light)
+    SystemThemeChanged { is_dark: bool },
     /// Close requested
     CloseRequested,
 }
@@ -333,7 +335,13 @@ where
 
                             if let Some(action) = key_to_action(key_str, ctrl, shift) {
                                 event_handler(&mut app_window, AppEvent::KeyAction(action), raw_event);
+                            } else {
+                                // No shortcut match: forward to egui for text input
+                                event_handler(&mut app_window, AppEvent::EguiEvent, raw_event);
                             }
+                        } else {
+                            // Key release: forward to egui for text input handling
+                            event_handler(&mut app_window, AppEvent::EguiEvent, raw_event);
                         }
                     }
 
@@ -348,6 +356,11 @@ where
                         if let Some(path_str) = path.to_str() {
                             event_handler(&mut app_window, AppEvent::FileDropped(path_str.to_string()), raw_event);
                         }
+                    }
+
+                    WindowEvent::ThemeChanged(theme) => {
+                        let is_dark = *theme == winit::window::Theme::Dark;
+                        event_handler(&mut app_window, AppEvent::SystemThemeChanged { is_dark }, raw_event);
                     }
 
                     _ => {

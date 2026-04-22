@@ -3,7 +3,6 @@
 //! Interface for configuration management.
 
 use serde::{Deserialize, Serialize};
-use crate::domain::value_objects::Color;
 use thiserror::Error;
 
 /// Errors that can occur during config operations
@@ -34,6 +33,15 @@ pub struct AppConfig {
     pub display: DisplayConfig,
     /// Color settings
     pub colors: ColorConfig,
+    /// Theme settings
+    #[serde(default)]
+    pub theme: ThemeConfig,
+    /// Canvas rendering settings
+    #[serde(default)]
+    pub canvas: CanvasConfig,
+    /// Gradient scale overlay settings
+    #[serde(default)]
+    pub gradient_scale: GradientScaleConfig,
     /// Recent files list
     pub recent_files: Vec<String>,
 }
@@ -44,7 +52,249 @@ impl Default for AppConfig {
             window: WindowConfig::default(),
             display: DisplayConfig::default(),
             colors: ColorConfig::default(),
+            theme: ThemeConfig::default(),
+            canvas: CanvasConfig::default(),
+            gradient_scale: GradientScaleConfig::default(),
             recent_files: Vec::new(),
+        }
+    }
+}
+
+/// Gradient scale overlay settings (persisted)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GradientScaleConfig {
+    /// Gradient palette for the parameter scale (viridis, cividis, turbo, ocean, inferno)
+    pub gradient_palette: GradientPaletteId,
+}
+
+impl Default for GradientScaleConfig {
+    fn default() -> Self {
+        Self {
+            gradient_palette: GradientPaletteId::default(),
+        }
+    }
+}
+
+/// Identifies a gradient colormap preset for the scale overlay.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GradientPaletteId {
+    Viridis,
+    Cividis,
+    Turbo,
+    Ocean,
+    Inferno,
+}
+
+impl Default for GradientPaletteId {
+    fn default() -> Self {
+        GradientPaletteId::Viridis
+    }
+}
+
+impl GradientPaletteId {
+    /// Human-readable display name.
+    pub fn label(&self) -> &'static str {
+        match self {
+            GradientPaletteId::Viridis => "Viridis",
+            GradientPaletteId::Cividis => "Cividis",
+            GradientPaletteId::Turbo => "Turbo",
+            GradientPaletteId::Ocean => "Ocean",
+            GradientPaletteId::Inferno => "Inferno",
+        }
+    }
+}
+
+/// Ordered list of all gradient palette IDs.
+pub const ALL_GRADIENT_PALETTE_IDS: &[GradientPaletteId] = &[
+    GradientPaletteId::Viridis,
+    GradientPaletteId::Cividis,
+    GradientPaletteId::Turbo,
+    GradientPaletteId::Ocean,
+    GradientPaletteId::Inferno,
+];
+
+/// Canvas rendering settings (persisted)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CanvasConfig {
+    /// Base line width in pixels
+    pub line_width: f32,
+    /// Boundary line width multiplier (relative to base)
+    pub boundary_width_multiplier: f32,
+    /// Contour line width multiplier (relative to base)
+    pub contour_width_multiplier: f32,
+    /// Hatch line width multiplier (relative to base)
+    pub hatch_width_multiplier: f32,
+    /// Arrow size multiplier (scales arrow arm length)
+    pub arrow_size_multiplier: f32,
+    /// Wait marker (dot) size multiplier (scales circle radius)
+    pub wait_marker_size_multiplier: f32,
+    /// Alpha for future (not-yet-drawn) vectors in playback
+    pub future_vector_alpha: f32,
+    /// Show directional gradient (fade from start to end of vector)
+    pub show_direction_gradient: bool,
+    /// Minor grid line width
+    pub grid_line_width_minor: f32,
+    /// Major grid line width
+    pub grid_line_width_major: f32,
+    /// Grid opacity multiplier (0.0–1.0)
+    pub grid_opacity: f32,
+    /// Anti-aliasing (line smoothing)
+    pub antialiasing: bool,
+}
+
+impl Default for CanvasConfig {
+    fn default() -> Self {
+        Self {
+            line_width: 1.5,
+            boundary_width_multiplier: 1.5,
+            contour_width_multiplier: 1.0,
+            hatch_width_multiplier: 0.8,
+            arrow_size_multiplier: 1.0,
+            wait_marker_size_multiplier: 1.0,
+            future_vector_alpha: 0.15,
+            show_direction_gradient: true,
+            grid_line_width_minor: 1.0,
+            grid_line_width_major: 1.5,
+            grid_opacity: 1.0,
+            antialiasing: true,
+        }
+    }
+}
+
+/// Theme and palette configuration (persisted)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ThemeConfig {
+    /// Theme mode: light / dark / system
+    pub mode: ThemeMode,
+    /// Palette id for light mode
+    pub light_palette: PaletteId,
+    /// Palette id for dark mode
+    pub dark_palette: PaletteId,
+    /// Custom palette overrides for light mode
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub custom_light: Option<CustomPaletteConfig>,
+    /// Custom palette overrides for dark mode
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub custom_dark: Option<CustomPaletteConfig>,
+}
+
+impl Default for ThemeConfig {
+    fn default() -> Self {
+        Self {
+            mode: ThemeMode::default(),
+            light_palette: PaletteId::default(),
+            dark_palette: PaletteId::default(),
+            custom_light: None,
+            custom_dark: None,
+        }
+    }
+}
+
+/// Overall application appearance mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ThemeMode {
+    Light,
+    Dark,
+    System,
+}
+
+impl Default for ThemeMode {
+    fn default() -> Self {
+        ThemeMode::System
+    }
+}
+
+impl ThemeMode {
+    pub fn label(&self) -> &'static str {
+        match self {
+            ThemeMode::Light => "Light",
+            ThemeMode::Dark => "Dark",
+            ThemeMode::System => "System",
+        }
+    }
+}
+
+/// Identifies a curated palette within a given mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PaletteId {
+    Default,
+    Professional,
+    Vibrant,
+    Ocean,
+    Warm,
+    ColorblindRG,
+    ColorblindBY,
+    HighContrast,
+    Custom,
+}
+
+impl Default for PaletteId {
+    fn default() -> Self {
+        PaletteId::Default
+    }
+}
+
+impl PaletteId {
+    /// Human-readable display name.
+    pub fn label(&self) -> &'static str {
+        match self {
+            PaletteId::Default => "Default",
+            PaletteId::Professional => "Professional",
+            PaletteId::Vibrant => "Vibrant",
+            PaletteId::Ocean => "Ocean",
+            PaletteId::Warm => "Warm",
+            PaletteId::ColorblindRG => "Colorblind Safe (R/G)",
+            PaletteId::ColorblindBY => "Colorblind Safe (B/Y)",
+            PaletteId::HighContrast => "High Contrast",
+            PaletteId::Custom => "Custom",
+        }
+    }
+
+    /// Accessibility badge text (if any).
+    pub fn badge(&self) -> Option<&'static str> {
+        match self {
+            PaletteId::ColorblindRG => Some("\u{267F} Deuteranopia safe"),
+            PaletteId::ColorblindBY => Some("\u{267F} Tritanopia safe"),
+            PaletteId::HighContrast => Some("\u{267F} WCAG AAA"),
+            _ => None,
+        }
+    }
+}
+
+/// Ordered list of all palette IDs.
+pub const ALL_PALETTE_IDS: &[PaletteId] = &[
+    PaletteId::Default,
+    PaletteId::Professional,
+    PaletteId::Vibrant,
+    PaletteId::Ocean,
+    PaletteId::Warm,
+    PaletteId::ColorblindRG,
+    PaletteId::ColorblindBY,
+    PaletteId::HighContrast,
+    PaletteId::Custom,
+];
+
+/// Per-color hex overrides for the Custom palette.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CustomPaletteConfig {
+    pub background: String,
+    pub boundary: String,
+    pub contour: String,
+    pub hatch: String,
+    pub accent: String,
+}
+
+impl Default for CustomPaletteConfig {
+    fn default() -> Self {
+        Self {
+            background: "#FAFAFA".into(),
+            boundary: "#2C3E50".into(),
+            contour: "#00BCD4".into(),
+            hatch: "#E91E63".into(),
+            accent: "#1976D2".into(),
         }
     }
 }

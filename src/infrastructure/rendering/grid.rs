@@ -45,15 +45,23 @@ impl GridRenderer {
         }
     }
 
-    /// Prepare grid geometry for the current view.
-    pub fn prepare(
+    /// Prepare grid geometry with custom minor/major colors and line widths.
+    pub fn prepare_with_colors(
         &mut self,
         view: &ViewState,
         viewport_width: f32,
         viewport_height: f32,
+        minor_color: Color,
+        major_color: Color,
+        minor_line_width: f32,
+        major_line_width: f32,
+        opacity: f32,
     ) {
         self.major_batch.clear();
         self.minor_batch.clear();
+
+        let minor_color = minor_color.with_alpha(minor_color.a * opacity);
+        let major_color = major_color.with_alpha(major_color.a * opacity);
 
         let (minor_spacing, major_spacing) = pick_grid_spacing(view.zoom);
         let (vis_min, vis_max) = view.visible_bounds(viewport_width, viewport_height);
@@ -64,9 +72,6 @@ impl GridRenderer {
         let x_end = ((vis_max.x + pad) / minor_spacing).ceil() * minor_spacing;
         let y_start = ((vis_min.y - pad) / minor_spacing).floor() * minor_spacing;
         let y_end = ((vis_max.y + pad) / minor_spacing).ceil() * minor_spacing;
-
-        let minor_color = Color::new(0.0, 0.0, 0.0, 0.08);
-        let major_color = Color::new(0.0, 0.0, 0.0, 0.20);
 
         // Cap line count to prevent performance issues at extreme zoom
         let max_lines = 400;
@@ -125,8 +130,8 @@ impl GridRenderer {
             }
         }
 
-        self.minor_batch.set_line_width(1.0);
-        self.major_batch.set_line_width(1.5);
+        self.minor_batch.set_line_width(minor_line_width);
+        self.major_batch.set_line_width(major_line_width);
     }
 
     /// Render the grid. Must be called after prepare() and with shader/projection already set.

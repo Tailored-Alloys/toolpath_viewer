@@ -2,9 +2,10 @@
 //!
 //! Orchestrates rendering of the toolpath visualization.
 
-use crate::application::ports::{DisplayOptions, RenderResult, Renderer, ViewState};
-use crate::domain::entities::{Layer, SliceStack, VectorType};
-use crate::domain::value_objects::{Bounds2D, Color};
+use crate::application::ports::{DisplayOptions, ViewState};
+use crate::domain::entities::VectorType;
+use crate::domain::value_objects::Color;
+use crate::presentation::palette::ThemePalette;
 
 /// Color scheme for rendering different vector types
 #[derive(Debug, Clone)]
@@ -47,6 +48,19 @@ impl ColorScheme {
             VectorType::Travel => &self.travel,
         }
     }
+
+    /// Build a ColorScheme from a ThemePalette.
+    pub fn from_palette(palette: &ThemePalette) -> Self {
+        Self {
+            boundary: palette.boundary,
+            contour: palette.contour,
+            base_contour: palette.base_contour,
+            depth_contour: palette.depth_contour,
+            hatch: palette.hatch,
+            support: palette.support,
+            travel: palette.travel,
+        }
+    }
 }
 
 /// Use case for rendering the visualization
@@ -66,56 +80,6 @@ impl RenderViewUseCase {
         }
     }
 
-    /// Fit view to show entire slice stack
-    pub fn fit_to_stack(&mut self, stack: &SliceStack, viewport_width: f32, viewport_height: f32) {
-        if let Some((min, max)) = stack.bounds() {
-            let bounds = Bounds2D::new(min, max);
-            self.view_state.fit_to_bounds(&bounds, viewport_width, viewport_height);
-        }
-    }
-
-    /// Fit view to show a specific layer
-    pub fn fit_to_layer(&mut self, layer: &Layer, viewport_width: f32, viewport_height: f32) {
-        if let Some((min, max)) = layer.bounds() {
-            let bounds = Bounds2D::new(min, max);
-            self.view_state.fit_to_bounds(&bounds, viewport_width, viewport_height);
-        }
-    }
-
-    /// Render a layer using the given renderer
-    pub fn render_layer<R: Renderer>(
-        &self,
-        renderer: &mut R,
-        layer: &Layer,
-    ) -> RenderResult<()> {
-        renderer.render_layer(layer, &self.view_state, &self.display_options)
-    }
-
-    /// Render a single vector with appropriate color
-    pub fn render_vector<R: Renderer>(
-        &self,
-        renderer: &mut R,
-        vector: &crate::domain::entities::Vector,
-    ) -> RenderResult<()> {
-        // Check visibility based on vector type
-        let visible = match vector.vector_type {
-            VectorType::Boundary => self.display_options.show_slices,
-            VectorType::Contour | VectorType::BaseContour | VectorType::CoincidingContour => {
-                self.display_options.show_contours
-            }
-            VectorType::DepthContour => self.display_options.show_depth_contours,
-            VectorType::Hatch => self.display_options.show_hatches,
-            VectorType::Support | VectorType::Travel => true,
-        };
-
-        if !visible {
-            return Ok(());
-        }
-
-        let color = self.color_scheme.color_for_type(vector.vector_type);
-        renderer.render_vector(vector, color, self.display_options.line_width)
-    }
-
     /// Handle pan gesture
     pub fn pan(&mut self, delta_x: f32, delta_y: f32) {
         self.view_state.pan(delta_x, delta_y);
@@ -131,11 +95,6 @@ impl RenderViewUseCase {
         viewport_height: f32,
     ) {
         self.view_state.zoom_at(factor, center_x, center_y, viewport_width, viewport_height);
-    }
-
-    /// Reset view to defaults
-    pub fn reset_view(&mut self) {
-        self.view_state = ViewState::default();
     }
 
     /// Toggle a display option

@@ -2,21 +2,15 @@
 //!
 //! Interface for rendering operations.
 
-use crate::domain::entities::{Layer, SliceStack, Vector};
+use crate::domain::entities::{Layer, Vector};
 use crate::domain::value_objects::{Bounds2D, Color, Point2D};
 use thiserror::Error;
 
 /// Errors that can occur during rendering
 #[derive(Debug, Error)]
 pub enum RenderError {
-    #[error("OpenGL error: {0}")]
-    OpenGLError(String),
-    
     #[error("Shader compilation error: {0}")]
     ShaderError(String),
-    
-    #[error("Buffer allocation error: {0}")]
-    BufferError(String),
     
     #[error("Invalid state: {0}")]
     InvalidState(String),
@@ -58,8 +52,36 @@ pub struct DisplayOptions {
     pub background_color: Color,
     /// Line width multiplier
     pub line_width: f32,
+    /// Boundary line width multiplier (relative to base line_width)
+    pub boundary_width_multiplier: f32,
+    /// Contour line width multiplier (relative to base line_width)
+    pub contour_width_multiplier: f32,
+    /// Hatch line width multiplier (relative to base line_width)
+    pub hatch_width_multiplier: f32,
+    /// Arrow size multiplier (scales arrow arm length)
+    pub arrow_size_multiplier: f32,
+    /// Wait marker (dot) size multiplier
+    pub wait_marker_size_multiplier: f32,
+    /// Alpha for future (not-yet-drawn) vectors in playback
+    pub future_vector_alpha: f32,
+    /// Show directional gradient (fade from start to end of vector)
+    pub show_direction_gradient: bool,
+    /// Minor grid line width
+    pub grid_line_width_minor: f32,
+    /// Major grid line width
+    pub grid_line_width_major: f32,
+    /// Grid opacity multiplier (0.0–1.0)
+    pub grid_opacity: f32,
+    /// Anti-aliasing (line smoothing)
+    pub antialiasing: bool,
     /// Maximum vector index to render (None = all vectors, Some(n) = 0..=n)
     pub max_vector_index: Option<usize>,
+    /// Minor grid line color
+    pub grid_minor_color: Color,
+    /// Major grid line color
+    pub grid_major_color: Color,
+    /// Override color for all vectors (used in "color by file" mode)
+    pub file_color_override: Option<Color>,
 }
 
 impl Default for DisplayOptions {
@@ -80,7 +102,21 @@ impl Default for DisplayOptions {
             grid_unit: GridUnit::Millimeters,
             background_color: Color::from_hex("#FAFAFA").unwrap_or(Color::WHITE),
             line_width: 1.5,
+            boundary_width_multiplier: 1.5,
+            contour_width_multiplier: 1.0,
+            hatch_width_multiplier: 0.8,
+            arrow_size_multiplier: 1.0,
+            wait_marker_size_multiplier: 1.0,
+            future_vector_alpha: 0.15,
+            show_direction_gradient: true,
+            grid_line_width_minor: 1.0,
+            grid_line_width_major: 1.5,
+            grid_opacity: 1.0,
+            antialiasing: true,
             max_vector_index: None,
+            grid_minor_color: Color::new(0.0, 0.0, 0.0, 0.08),
+            grid_major_color: Color::new(0.0, 0.0, 0.0, 0.20),
+            file_color_override: None,
         }
     }
 }
@@ -90,7 +126,29 @@ impl Default for DisplayOptions {
 pub enum ParameterMode {
     Power,
     Speed,
-    WaitTime,
+}
+
+/// Color mode for the viewport
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ColorMode {
+    /// Color vectors by their type (contour, hatch, boundary, etc.)
+    ByVectorType,
+    /// Color all vectors in a file with that file's assigned color
+    ByFile,
+    /// Color vectors by a parameter value using a gradient
+    ByParameter(ParameterMode),
+}
+
+/// View mode controlling how multiple files are displayed
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ViewMode {
+    /// All visible files rendered on the same viewport (default)
+    #[default]
+    Overlay,
+    /// Show one file at a time, switchable via tabs
+    Tab,
+    /// Side-by-side split showing two files simultaneously
+    Split,
 }
 
 /// Grid unit for measurement display
@@ -212,7 +270,6 @@ impl GlobalUnits {
         match mode {
             ParameterMode::Power => format!("Power ({})", self.power.label()),
             ParameterMode::Speed => format!("Speed ({})", self.length.speed_label()),
-            ParameterMode::WaitTime => format!("Wait ({})", self.time.label()),
         }
     }
 
@@ -221,7 +278,6 @@ impl GlobalUnits {
         match mode {
             ParameterMode::Power => format!(" {}", self.power.label()),
             ParameterMode::Speed => format!(" {}", self.length.speed_label()),
-            ParameterMode::WaitTime => format!(" {}", self.time.label()),
         }
     }
 
@@ -230,7 +286,6 @@ impl GlobalUnits {
         match mode {
             ParameterMode::Power => self.power.from_watts(raw),
             ParameterMode::Speed => self.length.speed_from_mm_per_s(raw),
-            ParameterMode::WaitTime => self.time.from_us(raw),
         }
     }
 }
@@ -242,8 +297,6 @@ pub struct ViewState {
     pub center: Point2D,
     /// Zoom level (pixels per unit)
     pub zoom: f32,
-    /// Rotation angle in radians
-    pub rotation: f32,
 }
 
 impl Default for ViewState {
@@ -251,7 +304,6 @@ impl Default for ViewState {
         Self {
             center: Point2D::zero(),
             zoom: 1.0,
-            rotation: 0.0,
         }
     }
 }
@@ -359,21 +411,4 @@ pub trait Renderer: Send {
     
     /// Get current viewport dimensions
     fn viewport_size(&self) -> (u32, u32);
-}
-
-/// Port for batch rendering (optimization)
-pub trait BatchRenderer: Renderer {
-    /// Upload layer data to GPU buffers for efficient rendering
-    fn upload_layer(&mut self, layer: &Layer) -> RenderResult<()>;
-    
-    /// Render a previously uploaded layer
-    fn render_uploaded_layer(
-        &mut self,
-        layer_index: usize,
-        view: &ViewState,
-        options: &DisplayOptions,
-    ) -> RenderResult<()>;
-    
-    /// Clear all uploaded data
-    fn clear_uploaded(&mut self);
 }

@@ -1,0 +1,89 @@
+name: Build & Release Installer
+
+on:
+  push:
+    branches:
+      - release
+      - 'release/**'
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build-and-release:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-registry-
+
+      - name: Clean previous build artifacts
+        run: cargo clean --release
+
+      - name: Build release binary
+        run: cargo build --release
+
+      - name: Extract version from Cargo.toml
+        id: version
+        shell: pwsh
+        run: |
+          $version = (Select-String -Path Cargo.toml -Pattern '^version\s*=\s*"(.+)"' | ForEach-Object { $_.Matches.Groups[1].Value })
+          echo "VERSION=$version" >> $env:GITHUB_OUTPUT
+          echo "TAG=v$version" >> $env:GITHUB_OUTPUT
+          echo "Detected version: $version"
+
+      - name: Install Inno Setup
+        shell: pwsh
+        run: |
+          choco install innosetup -y --no-progress
+          echo "C:\Program Files (x86)\Inno Setup 6" >> $env:GITHUB_PATH
+
+      - name: Compile installer
+        shell: pwsh
+        run: |
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer\toolpath_viewer.iss
+          Get-ChildItem installer\output\
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.TAG }}
+          name: Toolpath Viewer ${{ steps.version.outputs.TAG }}
+          body: |
+            ## Toolpath Viewer ${{ steps.version.outputs.TAG }}
+
+            ### Changes
+            - Bug Fixes
+            - Minor UI Updates
+
+            ### Installation
+            Download `ToolpathViewer_Setup_${{ steps.version.outputs.VERSION }}.exe` and run the installer.
+
+            **Existing users**: The application will notify you of this update automatically.
+            You can also download and run the installer — it will upgrade your existing installation.
+          draft: false
+          prerelease: false
+          make_latest: true
+          files: |
+            installer/output/ToolpathViewer_Setup_${{ steps.version.outputs.VERSION }}.exe
+            target/release/toolpath_viewer.exe
+          fail_on_unmatched_files: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

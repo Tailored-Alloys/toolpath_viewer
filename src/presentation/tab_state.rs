@@ -1,0 +1,268 @@
+//! Tab State Management
+//!
+//! Each open file gets a `TabState` holding its own camera, layer navigation,
+//! display toggles, and vector playback state — fully independent of other tabs.
+//!
+//! `TabManager` tracks the ordered list of open tabs, the active tab, and the
+//! split-mode partner.
+
+use std::collections::{HashMap, HashSet};
+
+use crate::application::ports::ViewState;
+use crate::application::use_cases::NavigateLayersUseCase;
+use crate::domain::entities::SliceStack;
+use crate::domain::value_objects::Bounds2D;
+
+// ── Per-tab state ────────────────────────────────────────────────────────
+
+/// Fully independent state for one tab (one file).
+pub struct TabState {
+    /// File ID this tab represents
+    pub file_id: usize,
+
+    /// Camera state (center, zoom, rotation)
+    pub view_state: ViewState,
+
+    /// Layer navigation (current index, z-heights, helpers)
+    pub navigation: NavigateLayersUseCase,
+
+    // ── Display toggles ──
+    pub show_slices: bool,
+    pub show_contours: bool,
+    pub show_hatches: bool,
+    pub show_arrows: bool,
+    pub show_wait_markers: bool,
+
+    // ── Viewport fit ──
+    /// Whether this tab still needs an initial fit-to-bounds (deferred until
+    /// the authoritative viewport dimensions are available after UI layout).
+    pub needs_initial_fit: bool,
+    /// Cached bounding box of the file's geometry for fit/reset operations.
+    pub file_bounds: Option<Bounds2D>,
+
+    // ── Vector playback ──
+    pub vector_view_enabled: bool,
+    pub current_vector_index: usize,
+    pub total_vectors_in_layer: usize,
+    pub vector_view_playing: bool,
+    pub playback_time_accumulator: f64,
+    pub playback_speed: f32,
+}
+
+impl TabState {
+    /// Create a fresh tab for a file, initialising navigation from its layers.
+    pub fn new(file_id: usize, stack: &SliceStack) -> Self {
+        let mut navigation = NavigateLayersUseCase::new();
+        navigation.initialize(stack);
+
+        Self {
+            file_id,
+            view_state: ViewState::default(),
+            navigation,
+            show_slices: true,
+            show_contours: true,
+            show_hatches: true,
+            show_arrows: false,
+            show_wait_markers: false,
+            needs_initial_fit: true,
+            file_bounds: None,
+            vector_view_enabled: false,
+            current_vector_index: 0,
+            total_vectors_in_layer: 0,
+            vector_view_playing: false,
+            playback_time_accumulator: 0.0,
+            playback_speed: 1.0,
+        }
+    }
+}
+
+// ── Tab manager ──────────────────────────────────────────────────────────
+
+/// Manages open tabs and their states.
+pub struct TabManager {
+    tabs: HashMap<usize, TabState>,
+    /// Ordered list of open tab file-IDs (tab-bar display order).
+    pub open_tab_ids: Vec<usize>,
+    /// Currently active (focused) tab.
+    pub active_tab_id: Option<usize>,
+    /// Second file shown in Split mode.
+    pub split_partner_id: Option<usize>,
+    /// File IDs visible in Overlay mode (multi-select).
+    /// When empty, all open tabs are considered visible (default behavior).
+    pub overlay_visible_ids: HashSet<usize>,
+    /// Active file in the right split pane (independent of left).
+    pub split_right_active_id: Option<usize>,
+    /// Whether split panes share camera/layer (true) or are independent (false).
+    pub split_cameras_synced: bool,
+    /// Independent camera state for the right split pane (used when unsynced).
+    pub split_right_view_state: Option<ViewState>,
+    /// Independent layer navigation for the right split pane (used when unsynced).
+    pub split_right_navigation: Option<NavigateLayersUseCase>,
+}
+
+impl TabManager {
+    pub fn new() -> Self {
+        Self {
+            tabs: HashMap::new(),
+            open_tab_ids: Vec::new(),
+            active_tab_id: None,
+            split_partner_id: None,
+            overlay_visible_ids: HashSet::new(),
+            split_right_active_id: None,
+            split_cameras_synced: true,
+            split_right_view_state: None,
+            split_right_navigation: None,
+        }
+    }
+
+    /// Open (or reopen) a tab for the given file.
+    /// If a TabState already exists it is reused; otherwise a fresh one is created.
+    pub fn open_tab(&mut self, file_id: usize, stack: &SliceStack) {
+        if !self.tabs.contains_key(&file_id) {
+            self.tabs.insert(file_id, TabState::new(file_id, stack));
+        }
+        if !self.open_tab_ids.contains(&file_id) {
+            self.open_tab_ids.push(file_id);
+        }
+        // Always activate the newly opened tab so the user sees it immediately
+        self.active_tab_id = Some(file_id);
+        // In overlay mode, newly opened tabs are visible by default
+        self.overlay_visible_ids.insert(file_id);
+    }
+
+    /// Close a tab (hide file). The `TabState` is kept so it can be reopened.
+    /// Selects the nearest neighbor (previous tab, or next if closing the first).
+    pub fn close_tab(&mut self, file_id: usize) {
+        let closed_index = self.open_tab_ids.iter().position(|&id| id == file_id);
+        self.open_tab_ids.retain(|&id| id != file_id);
+        if self.active_tab_id == Some(file_id) {
+            self.active_tab_id = if self.open_tab_ids.is_empty() {
+                None
+            } else if let Some(idx) = closed_index {
+                // Select previous tab, or the first tab if we closed index 0
+                let new_idx = if idx > 0 { idx - 1 } else { 0 };
+                Some(self.open_tab_ids[new_idx.min(self.open_tab_ids.len() - 1)])
+            } else {
+                self.open_tab_ids.first().copied()
+            };
+        }
+        if self.split_partner_id == Some(file_id) {
+            self.split_partner_id = self.open_tab_ids.iter()
+                .find(|&&id| Some(id) != self.active_tab_id)
+                .copied();
+        }
+    }
+
+    /// Move a tab from one position to another in the tab bar order.
+    pub fn reorder_tab(&mut self, from_index: usize, to_index: usize) {
+        if from_index == to_index { return; }
+        if from_index >= self.open_tab_ids.len() || to_index >= self.open_tab_ids.len() { return; }
+        let id = self.open_tab_ids.remove(from_index);
+        self.open_tab_ids.insert(to_index, id);
+    }
+
+    /// Reopen a previously closed tab (no-op if already open or unknown).
+    pub fn reopen_tab(&mut self, file_id: usize) {
+        if self.tabs.contains_key(&file_id) && !self.open_tab_ids.contains(&file_id) {
+            self.open_tab_ids.push(file_id);
+        }
+    }
+
+    /// Set the active tab.
+    pub fn set_active(&mut self, file_id: usize) {
+        if self.open_tab_ids.contains(&file_id) {
+            self.active_tab_id = Some(file_id);
+        }
+    }
+
+    // ── Accessors ──
+
+    pub fn active_tab(&self) -> Option<&TabState> {
+        self.active_tab_id.and_then(|id| self.tabs.get(&id))
+    }
+
+    pub fn active_tab_mut(&mut self) -> Option<&mut TabState> {
+        self.active_tab_id.and_then(|id| self.tabs.get_mut(&id))
+    }
+
+    pub fn tab_mut(&mut self, file_id: usize) -> Option<&mut TabState> {
+        self.tabs.get_mut(&file_id)
+    }
+
+    /// Iterate mutably over all tab states.
+    pub fn all_tabs_mut(&mut self) -> impl Iterator<Item = &mut TabState> {
+        self.tabs.values_mut()
+    }
+
+    /// Permanently remove a file's tab state (when the file is unloaded).
+    pub fn remove_tab(&mut self, file_id: usize) {
+        self.tabs.remove(&file_id);
+        self.open_tab_ids.retain(|&id| id != file_id);
+        self.overlay_visible_ids.remove(&file_id);
+        if self.active_tab_id == Some(file_id) {
+            self.active_tab_id = self.open_tab_ids.first().copied();
+        }
+        if self.split_partner_id == Some(file_id) {
+            self.split_partner_id = None;
+        }
+        if self.split_right_active_id == Some(file_id) {
+            self.split_right_active_id = None;
+        }
+    }
+
+    pub fn has_tabs(&self) -> bool {
+        !self.open_tab_ids.is_empty()
+    }
+
+    pub fn tab_count(&self) -> usize {
+        self.open_tab_ids.len()
+    }
+
+    // ── Split camera helpers ──
+
+    /// Toggle whether split panes share camera/layer or are independent.
+    /// When switching to unsynced, initializes right pane state from the active tab's camera.
+    pub fn toggle_split_sync(&mut self) {
+        self.split_cameras_synced = !self.split_cameras_synced;
+        if !self.split_cameras_synced && self.split_right_view_state.is_none() {
+            // Initialize right pane camera from active tab's current view
+            if let Some(tab) = self.active_tab_id.and_then(|id| self.tabs.get(&id)) {
+                self.split_right_view_state = Some(tab.view_state.clone());
+                self.split_right_navigation = Some(tab.navigation.clone());
+            }
+        }
+    }
+
+    // ── Overlay visibility helpers ──
+
+    /// Toggle a file's visibility in overlay mode.
+    pub fn toggle_overlay_visible(&mut self, file_id: usize) {
+        if self.overlay_visible_ids.contains(&file_id) {
+            // Don't allow hiding the last visible file
+            if self.overlay_visible_ids.len() > 1 {
+                self.overlay_visible_ids.remove(&file_id);
+            }
+        } else {
+            self.overlay_visible_ids.insert(file_id);
+        }
+    }
+
+    /// Check if a file is visible in overlay mode.
+    pub fn is_overlay_visible(&self, file_id: usize) -> bool {
+        self.overlay_visible_ids.contains(&file_id)
+    }
+
+    /// Set all open tabs as visible in overlay mode.
+    pub fn overlay_select_all(&mut self) {
+        self.overlay_visible_ids = self.open_tab_ids.iter().copied().collect();
+    }
+
+    /// Set only the active tab as visible in overlay mode.
+    pub fn overlay_select_none(&mut self) {
+        self.overlay_visible_ids.clear();
+        // Always keep at least the active tab visible
+        if let Some(id) = self.active_tab_id {
+            self.overlay_visible_ids.insert(id);
+        }
+    }
+}

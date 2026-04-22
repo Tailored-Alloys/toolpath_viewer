@@ -42,21 +42,6 @@ impl Color {
         }
     }
 
-    /// Create from RGB bytes (0-255)
-    pub fn from_rgb_bytes(r: u8, g: u8, b: u8) -> Self {
-        Self::rgb(r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0)
-    }
-
-    /// Create from RGBA bytes (0-255)
-    pub fn from_rgba_bytes(r: u8, g: u8, b: u8, a: u8) -> Self {
-        Self::new(
-            r as f32 / 255.0,
-            g as f32 / 255.0,
-            b as f32 / 255.0,
-            a as f32 / 255.0,
-        )
-    }
-
     /// Convert to hex string
     pub fn to_hex(&self) -> String {
         format!(
@@ -72,11 +57,6 @@ impl Color {
         [self.r, self.g, self.b, self.a]
     }
 
-    /// Convert to RGB array (drops alpha)
-    pub fn to_rgb_array(&self) -> [f32; 3] {
-        [self.r, self.g, self.b]
-    }
-
     /// Blend with another color
     pub fn blend(&self, other: &Color, t: f32) -> Color {
         Color {
@@ -90,24 +70,6 @@ impl Color {
     /// With different alpha
     pub fn with_alpha(self, a: f32) -> Self {
         Self { a, ..self }
-    }
-
-    /// Heat-map gradient: blue -> cyan -> green -> yellow -> red
-    pub fn heat_gradient(t: f32) -> Color {
-        let t = t.clamp(0.0, 1.0);
-        if t < 0.25 {
-            let s = t / 0.25;
-            Color::rgb(0.0, s, 1.0)
-        } else if t < 0.5 {
-            let s = (t - 0.25) / 0.25;
-            Color::rgb(0.0, 1.0, 1.0 - s)
-        } else if t < 0.75 {
-            let s = (t - 0.5) / 0.25;
-            Color::rgb(s, 1.0, 0.0)
-        } else {
-            let s = (t - 0.75) / 0.25;
-            Color::rgb(1.0, 1.0 - s, 0.0)
-        }
     }
 
     /// Viridis colormap: perceptually uniform, colorblind-safe gradient

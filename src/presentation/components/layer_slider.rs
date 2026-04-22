@@ -10,7 +10,7 @@ use lucide_icons::Icon as LucideIcon;
 
 use crate::application::ports::GlobalUnits;
 use crate::presentation::layout::LayerSliderRegion;
-use crate::presentation::theme::*;
+use crate::presentation::theme::{self, floating_panel_frame};
 
 /// Output from the layer slider component
 #[derive(Debug, Clone, Default)]
@@ -27,8 +27,10 @@ pub fn show_layer_slider(
     total_layers: usize,
     current_z: f32,
     global_units: &GlobalUnits,
+    focus_layer_input: &mut bool,
 ) -> LayerSliderOutput {
     let mut output = LayerSliderOutput::default();
+    let t = theme::active();
     let max_layer = total_layers.saturating_sub(1);
     let content_h = region.content_height;
 
@@ -36,9 +38,10 @@ pub fn show_layer_slider(
     let btn_h = 28.0;
     let goto_h = 42.0;
     let spacing = 8.0;
-    let controls_h = btn_h
-        + btn_h
-        + (if region.show_goto { goto_h } else { 0.0 })
+    // Show "Go to" input only when there is enough vertical space
+    let show_goto = content_h > (btn_h * 4.0 + goto_h + spacing * 3.0 + 60.0);
+    let controls_h = btn_h * 4.0
+        + (if show_goto { goto_h } else { 0.0 })
         + spacing * 3.0;
     let slider_h = (content_h - controls_h).max(60.0);
 
@@ -53,6 +56,7 @@ pub fn show_layer_slider(
                     ui.spacing_mut().item_spacing = egui::vec2(0.0, 0.0);
 
                     let panel_inner_w = region.width - 16.0;
+                    ui.set_max_width(panel_inner_w);
                     let (content_rect, _) = ui.allocate_exact_size(
                         egui::vec2(panel_inner_w, content_h),
                         egui::Sense::hover(),
@@ -67,7 +71,7 @@ pub fn show_layer_slider(
                         egui::vec2(44.0, btn_h),
                     );
                     let last_btn_top = egui::Button::new(
-                        RichText::new(&last_icon).size(16.0).color(TEXT_PRIMARY),
+                        RichText::new(&last_icon).size(16.0).color(t.text_primary),
                     )
                     .rounding(Rounding::same(6.0))
                     .fill(Color32::TRANSPARENT);
@@ -80,8 +84,28 @@ pub fn show_layer_slider(
                         output.layer_changed = true;
                     }
 
+                    // Next layer button (+1)
+                    let next_icon = LucideIcon::ChevronUp.unicode().to_string();
+                    let next_btn_rect = egui::Rect::from_center_size(
+                        egui::pos2(center_x, content_rect.top() + btn_h + btn_h / 2.0),
+                        egui::vec2(44.0, btn_h),
+                    );
+                    let next_btn = egui::Button::new(
+                        RichText::new(&next_icon).size(16.0).color(t.text_primary),
+                    )
+                    .rounding(Rounding::same(6.0))
+                    .fill(Color32::TRANSPARENT);
+                    if ui
+                        .put(next_btn_rect, next_btn)
+                        .on_hover_text("Next layer (↑)")
+                        .clicked()
+                    {
+                        output.new_layer = (current_layer + 1).min(max_layer);
+                        output.layer_changed = true;
+                    }
+
                     // ── Custom vertical slider (track + thumb) ──
-                    let track_top_y = content_rect.top() + btn_h + spacing;
+                    let track_top_y = content_rect.top() + btn_h * 2.0 + spacing;
                     let track_w = 10.0;
                     let thumb_radius = 12.0;
                     let track_rect = egui::Rect::from_min_size(
@@ -124,7 +148,7 @@ pub fn show_layer_slider(
                     painter.rect_filled(
                         track_rect,
                         Rounding::same(track_w / 2.0),
-                        Color32::from_rgb(220, 220, 220),
+                        if t.is_dark { Color32::from_rgb(60, 60, 60) } else { Color32::from_rgb(220, 220, 220) },
                     );
 
                     // Draw filled portion (top to thumb = progress)
@@ -136,7 +160,7 @@ pub fn show_layer_slider(
                         painter.rect_filled(
                             filled_rect,
                             Rounding::same(track_w / 2.0),
-                            ACCENT_LIGHT,
+                            t.accent_light,
                         );
                     }
 
@@ -145,14 +169,18 @@ pub fn show_layer_slider(
                     let is_active = response.dragged();
                     let is_hovered = response.hovered();
                     let thumb_color = if is_active {
-                        ACCENT
+                        t.accent
                     } else if is_hovered {
-                        ACCENT_LIGHT
+                        t.accent_light
+                    } else if t.is_dark {
+                        Color32::from_rgb(180, 180, 180)
                     } else {
                         Color32::WHITE
                     };
                     let thumb_stroke_color = if is_active || is_hovered {
-                        ACCENT
+                        t.accent
+                    } else if t.is_dark {
+                        Color32::from_rgb(100, 100, 100)
                     } else {
                         Color32::from_rgb(160, 160, 160)
                     };
@@ -179,18 +207,39 @@ pub fn show_layer_slider(
                         egui::Align2::LEFT_CENTER,
                         &layer_label,
                         egui::FontId::proportional(9.0),
-                        TEXT_SECONDARY,
+                        t.text_secondary,
                     );
+
+                    // Previous layer button (-1)
+                    let prev_icon = LucideIcon::ChevronDown.unicode().to_string();
+                    let prev_btn_y = track_top_y + slider_h + spacing + btn_h / 2.0;
+                    let prev_btn_rect = egui::Rect::from_center_size(
+                        egui::pos2(center_x, prev_btn_y),
+                        egui::vec2(44.0, btn_h),
+                    );
+                    let prev_btn = egui::Button::new(
+                        RichText::new(&prev_icon).size(16.0).color(t.text_primary),
+                    )
+                    .rounding(Rounding::same(6.0))
+                    .fill(Color32::TRANSPARENT);
+                    if ui
+                        .put(prev_btn_rect, prev_btn)
+                        .on_hover_text("Previous layer (↓)")
+                        .clicked()
+                    {
+                        output.new_layer = current_layer.saturating_sub(1);
+                        output.layer_changed = true;
+                    }
 
                     // First layer button (bottom — lowest layer number)
                     let first_icon = LucideIcon::ChevronsUp.unicode().to_string();
-                    let first_btn_y = track_top_y + slider_h + spacing + btn_h / 2.0;
+                    let first_btn_y = prev_btn_y + btn_h;
                     let first_btn_rect_bottom = egui::Rect::from_center_size(
                         egui::pos2(center_x, first_btn_y),
                         egui::vec2(44.0, btn_h),
                     );
                     let first_btn_bottom = egui::Button::new(
-                        RichText::new(&first_icon).size(16.0).color(TEXT_PRIMARY),
+                        RichText::new(&first_icon).size(16.0).color(t.text_primary),
                     )
                     .rounding(Rounding::same(6.0))
                     .fill(Color32::TRANSPARENT);
@@ -204,20 +253,25 @@ pub fn show_layer_slider(
                     }
 
                     // Go to section (hidden on small windows)
-                    if region.show_goto {
+                    if show_goto {
                         let goto_y = first_btn_y + btn_h / 2.0 + spacing;
 
                         // Input field showing "current/total" with editable current
                         let input_rect = egui::Rect::from_center_size(
                             egui::pos2(center_x, goto_y + 11.0),
-                            egui::vec2(56.0, 22.0),
+                            egui::vec2(panel_inner_w, 22.0),
                         );
                         let mut jump_val = (current_layer + 1) as i64;
                         let dv = DragValue::new(&mut jump_val)
                             .clamp_range(1..=(total_layers as i64))
                             .speed(1.0)
                             .suffix(format!("/{}", total_layers));
-                        if ui.put(input_rect, dv).changed() {
+                        let dv_response = ui.put(input_rect, dv);
+                        if *focus_layer_input {
+                            dv_response.request_focus();
+                            *focus_layer_input = false;
+                        }
+                        if dv_response.changed() {
                             output.new_layer = (jump_val as usize)
                                 .saturating_sub(1)
                                 .min(total_layers.saturating_sub(1));
@@ -237,7 +291,7 @@ pub fn show_layer_slider(
                                 egui::Align2::CENTER_TOP,
                                 &z_text,
                                 egui::FontId::proportional(9.0),
-                                TEXT_SECONDARY,
+                                t.text_secondary,
                             );
                         }
                     }

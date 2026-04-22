@@ -9,27 +9,21 @@
 use egui::{Color32, Context, Rounding, Stroke};
 
 use crate::application::ports::{GlobalUnits, GridUnit, ParameterMode, ViewState};
-use crate::presentation::layout::{TOOLBAR_BOTTOM, TOOLBAR_HEIGHT};
-use crate::presentation::theme::ACCENT;
+use crate::presentation::theme;
 
 use super::super::ui::{HoverInfo, RulerMeasurement};
 
 /// Render the scale bar overlay in the bottom-left corner.
-/// `left_offset` shifts the bar right (e.g., when gradient panel is visible).
-pub fn show_scale_bar(ctx: &Context, zoom: f32, grid_unit: GridUnit, left_offset: f32) {
+/// `left_offset` shifts the bar right (e.g., when sidebar is visible).
+/// `bottom_offset` shifts the bar up above the status bar / vector player.
+pub fn show_scale_bar(ctx: &Context, zoom: f32, grid_unit: GridUnit, left_offset: f32, bottom_offset: f32) {
     let screen = ctx.screen_rect();
-    let painter = ctx.layer_painter(egui::LayerId::new(
-        egui::Order::Foreground,
-        egui::Id::new("scale_bar"),
-    ));
-    let bar_margin = 20.0;
-    let bar_y = screen.bottom() - bar_margin;
-    let bar_x_start = left_offset + bar_margin + 10.0;
 
     if zoom <= 0.0 {
         return;
     }
 
+    let t = theme::active();
     let nice_values: &[f32] = &[
         0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1.0, 2.0, 5.0, 10.0, 20.0, 50.0, 100.0, 200.0, 500.0,
     ];
@@ -42,14 +36,71 @@ pub fn show_scale_bar(ctx: &Context, zoom: f32, grid_unit: GridUnit, left_offset
         }
     }
     let bar_px = bar_world * zoom;
+
+    let bar_margin = 16.0;
+    let panel_pad_h = 12.0;
+    let panel_pad_v = 8.0;
+    let tick_h = 5.0;
+    let label_font = egui::FontId::proportional(10.0);
+
+    // Compute label text
+    let value = grid_unit.from_mm(bar_world);
+    let label = if value >= 1.0 {
+        format!("{:.0} {}", value, grid_unit.label())
+    } else {
+        format!("{:.2} {}", value, grid_unit.label())
+    };
+
+    // Measure label to size the panel
+    let label_galley = ctx.fonts(|f| f.layout_no_wrap(label.clone(), label_font.clone(), t.text_primary));
+    let label_w = label_galley.size().x;
+    let label_h = label_galley.size().y;
+
+    // Panel dimensions: fit the bar + label
+    let panel_inner_w = bar_px.max(label_w);
+    let panel_w = panel_inner_w + 2.0 * panel_pad_h;
+    let bar_section_h = tick_h * 2.0 + 2.0; // ticks + bar line
+    let panel_h = label_h + 4.0 + bar_section_h + 2.0 * panel_pad_v;
+
+    // Panel position (bottom-left, shifted by offsets)
+    let panel_x = left_offset + bar_margin;
+    let panel_y = screen.bottom() - bottom_offset - bar_margin - panel_h;
+    let panel_rect = egui::Rect::from_min_size(
+        egui::pos2(panel_x, panel_y),
+        egui::vec2(panel_w, panel_h),
+    );
+
+    let painter = ctx.layer_painter(egui::LayerId::new(
+        egui::Order::Middle,
+        egui::Id::new("scale_bar"),
+    ));
+
+    // Background panel
+    painter.rect(
+        panel_rect,
+        Rounding::same(8.0),
+        t.panel_bg_translucent,
+        Stroke::new(
+            1.0,
+            if t.is_dark {
+                Color32::from_rgba_premultiplied(60, 60, 60, 120)
+            } else {
+                Color32::from_rgba_premultiplied(180, 180, 180, 120)
+            },
+        ),
+    );
+
+    // Center content within panel
+    let content_x = panel_rect.center().x - bar_px / 2.0;
+    let bar_y = panel_rect.bottom() - panel_pad_v - tick_h;
+    let bar_x_start = content_x;
     let bar_x_end = bar_x_start + bar_px;
-    let tick_h = 6.0;
-    let bar_color = Color32::from_rgb(60, 60, 60);
+    let bar_color = t.text_secondary;
 
     // Bar line
     painter.line_segment(
         [egui::pos2(bar_x_start, bar_y), egui::pos2(bar_x_end, bar_y)],
-        Stroke::new(2.0, bar_color),
+        Stroke::new(1.5, bar_color),
     );
     // Left tick
     painter.line_segment(
@@ -57,7 +108,7 @@ pub fn show_scale_bar(ctx: &Context, zoom: f32, grid_unit: GridUnit, left_offset
             egui::pos2(bar_x_start, bar_y - tick_h),
             egui::pos2(bar_x_start, bar_y + tick_h),
         ],
-        Stroke::new(2.0, bar_color),
+        Stroke::new(1.5, bar_color),
     );
     // Right tick
     painter.line_segment(
@@ -65,25 +116,21 @@ pub fn show_scale_bar(ctx: &Context, zoom: f32, grid_unit: GridUnit, left_offset
             egui::pos2(bar_x_end, bar_y - tick_h),
             egui::pos2(bar_x_end, bar_y + tick_h),
         ],
-        Stroke::new(2.0, bar_color),
+        Stroke::new(1.5, bar_color),
     );
-    // Label
-    let value = grid_unit.from_mm(bar_world);
-    let label = if value >= 1.0 {
-        format!("{:.0} {}", value, grid_unit.label())
-    } else {
-        format!("{:.2} {}", value, grid_unit.label())
-    };
+    // Label (centered above bar)
     painter.text(
-        egui::pos2((bar_x_start + bar_x_end) / 2.0, bar_y - tick_h - 4.0),
+        egui::pos2(panel_rect.center().x, bar_y - tick_h - 4.0),
         egui::Align2::CENTER_BOTTOM,
         label,
-        egui::FontId::proportional(11.0),
-        bar_color,
+        label_font,
+        t.text_primary,
     );
 }
 
 /// Render ruler measurement overlays (persistent + live preview).
+/// `sidebar_w` shifts screen positions right when the sidebar is visible.
+/// `content_top` is the Y offset for the top of the viewport (toolbar + tab bar).
 pub fn show_ruler_overlay(
     ctx: &Context,
     measurements: &[RulerMeasurement],
@@ -91,13 +138,20 @@ pub fn show_ruler_overlay(
     ruler_end: Option<crate::domain::value_objects::Point2D>,
     view_transform: Option<&(f32, f32, ViewState)>,
     grid_unit: GridUnit,
+    sidebar_w: f32,
+    content_top: f32,
 ) {
     let painter = ctx.layer_painter(egui::LayerId::new(
-        egui::Order::Foreground,
+        egui::Order::Middle,
         egui::Id::new("ruler_overlay"),
     ));
     let ruler_color = Color32::from_rgb(220, 50, 50);
-    let label_bg = Color32::from_rgba_premultiplied(255, 255, 255, 200);
+    let t = theme::active();
+    let label_bg = if t.is_dark {
+        Color32::from_rgba_premultiplied(40, 40, 40, 200)
+    } else {
+        Color32::from_rgba_premultiplied(255, 255, 255, 200)
+    };
 
     let dot_color = Color32::from_rgb(140, 140, 140);
     let dot_radius = 5.0;
@@ -106,7 +160,7 @@ pub fn show_ruler_overlay(
     if let Some(start) = ruler_start {
         if let Some((vw, vh, view)) = view_transform {
             let s_start = view.world_to_screen(start.x, start.y, *vw, *vh);
-            let p = egui::pos2(s_start.x, s_start.y + TOOLBAR_BOTTOM);
+            let p = egui::pos2(s_start.x + sidebar_w, s_start.y + content_top);
             painter.circle_filled(p, dot_radius, dot_color);
         }
     }
@@ -117,8 +171,8 @@ pub fn show_ruler_overlay(
             let s_start = view.world_to_screen(m.start.x, m.start.y, *vw, *vh);
             let s_end = view.world_to_screen(m.end.x, m.end.y, *vw, *vh);
             (
-                egui::pos2(s_start.x, s_start.y + TOOLBAR_BOTTOM),
-                egui::pos2(s_end.x, s_end.y + TOOLBAR_BOTTOM),
+                egui::pos2(s_start.x + sidebar_w, s_start.y + content_top),
+                egui::pos2(s_end.x + sidebar_w, s_end.y + content_top),
             )
         });
         if let Some((p1, p2)) = s {
@@ -152,8 +206,8 @@ pub fn show_ruler_overlay(
             if let Some((vw, vh, view)) = view_transform {
                 let s_start = view.world_to_screen(start.x, start.y, *vw, *vh);
                 let s_end = view.world_to_screen(end.x, end.y, *vw, *vh);
-                let p1 = egui::pos2(s_start.x, s_start.y + TOOLBAR_BOTTOM);
-                let p2 = egui::pos2(s_end.x, s_end.y + TOOLBAR_BOTTOM);
+                let p1 = egui::pos2(s_start.x + sidebar_w, s_start.y + content_top);
+                let p2 = egui::pos2(s_end.x + sidebar_w, s_end.y + content_top);
                 let preview_color = Color32::from_rgb(160, 160, 160);
                 painter.line_segment([p1, p2], Stroke::new(1.5, preview_color));
                 painter.circle_filled(
@@ -184,7 +238,7 @@ pub fn show_zoom_rect(
     end: crate::domain::value_objects::Point2D,
 ) {
     let painter = ctx.layer_painter(egui::LayerId::new(
-        egui::Order::Foreground,
+        egui::Order::Middle,
         egui::Id::new("zoom_rect"),
     ));
     let rect = egui::Rect::from_two_pos(egui::pos2(start.x, start.y), egui::pos2(end.x, end.y));
@@ -193,33 +247,42 @@ pub fn show_zoom_rect(
         0.0,
         Color32::from_rgba_premultiplied(25, 118, 210, 30),
     );
-    painter.rect_stroke(rect, 0.0, Stroke::new(1.5, ACCENT));
+    painter.rect_stroke(rect, 0.0, Stroke::new(1.5, theme::active().accent));
 }
 
 /// Render grid coordinate labels overlay along viewport edges.
+/// `sidebar_w` shifts labels right when the sidebar is visible.
+/// `content_top` is the Y offset for the top of the viewport (toolbar + tab bar).
 pub fn show_grid_labels(
     ctx: &Context,
     view_transform: &(f32, f32, ViewState),
     grid_unit: GridUnit,
+    sidebar_w: f32,
+    content_top: f32,
 ) {
     let (vw, vh, view) = view_transform;
     let painter = ctx.layer_painter(egui::LayerId::new(
-        egui::Order::Foreground,
+        egui::Order::Middle,
         egui::Id::new("grid_labels"),
     ));
     let (_, major_spacing) = crate::infrastructure::rendering::GridRenderer::spacing(view.zoom);
     let (vis_min, vis_max) = view.visible_bounds(*vw, *vh);
-    let label_color = Color32::from_rgb(100, 100, 100);
-    let label_bg = Color32::from_rgba_premultiplied(250, 250, 250, 200);
+    let t = theme::active();
+    let label_color = t.text_secondary;
+    let label_bg = if t.is_dark {
+        Color32::from_rgba_premultiplied(40, 40, 40, 200)
+    } else {
+        Color32::from_rgba_premultiplied(250, 250, 250, 200)
+    };
 
     // Bottom edge labels (X axis)
     let x_start = (vis_min.x / major_spacing).floor() * major_spacing;
     let mut x = x_start;
     while x <= vis_max.x {
         let screen_pt = view.world_to_screen(x, vis_min.y, *vw, *vh);
-        let sx = screen_pt.x;
-        let sy = *vh + TOOLBAR_HEIGHT - 2.0;
-        if sx > 50.0 && sx < *vw - 20.0 {
+        let sx = screen_pt.x + sidebar_w;
+        let sy = *vh + content_top - 2.0;
+        if sx > sidebar_w + 50.0 && sx < sidebar_w + *vw - 20.0 {
             let val = grid_unit.from_mm(x);
             let label = if val.abs() >= 1.0 {
                 format!("{:.0}", val)
@@ -250,9 +313,9 @@ pub fn show_grid_labels(
     let mut y = y_start;
     while y <= vis_max.y {
         let screen_pt = view.world_to_screen(vis_min.x, y, *vw, *vh);
-        let sx = 4.0;
-        let sy = screen_pt.y + TOOLBAR_HEIGHT;
-        if sy > TOOLBAR_HEIGHT + 20.0 && sy < TOOLBAR_HEIGHT + *vh - 20.0 {
+        let sx = sidebar_w + 4.0;
+        let sy = screen_pt.y + content_top;
+        if sy > content_top + 20.0 && sy < content_top + *vh - 20.0 {
             let val = grid_unit.from_mm(y);
             let label = if val.abs() >= 1.0 {
                 format!("{:.0}", val)
@@ -291,10 +354,11 @@ pub fn show_hover_tooltip(
     ));
 
     let font = egui::FontId::proportional(11.5);
-    let label_color = Color32::from_rgb(80, 80, 80);
-    let value_color = Color32::from_rgb(30, 30, 30);
-    let bg_color = Color32::from_rgba_premultiplied(255, 255, 255, 230);
-    let border_color = Color32::from_rgb(180, 180, 180);
+    let t = theme::active();
+    let label_color = t.text_secondary;
+    let value_color = t.text_primary;
+    let bg_color = t.panel_bg_translucent;
+    let border_color = if t.is_dark { Color32::from_rgb(80, 80, 80) } else { Color32::from_rgb(180, 180, 180) };
 
     let fmt = |val: Option<f32>, mode: ParameterMode| -> String {
         match val {
@@ -315,7 +379,21 @@ pub fn show_hover_tooltip(
     let lines = [
         ("Power", fmt(info.power, ParameterMode::Power), units.param_suffix(ParameterMode::Power)),
         ("Speed", fmt(info.speed, ParameterMode::Speed), units.param_suffix(ParameterMode::Speed)),
-        ("Wait", fmt(info.wait_time, ParameterMode::WaitTime), units.param_suffix(ParameterMode::WaitTime)),
+        ("Wait", {
+            match info.wait_time {
+                Some(v) => {
+                    let converted = units.time.from_us(v);
+                    if converted.abs() >= 100.0 {
+                        format!("{:.0}", converted)
+                    } else if converted.abs() >= 1.0 {
+                        format!("{:.1}", converted)
+                    } else {
+                        format!("{:.2}", converted)
+                    }
+                }
+                None => "\u{2014}".to_string(),
+            }
+        }, format!(" {}", units.time.label())),
     ];
 
     // Measure text to compute tooltip rectangle

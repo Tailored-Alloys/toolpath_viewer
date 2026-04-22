@@ -54,12 +54,3 @@ pub trait FileLoader: Send + Sync {
         false
     }
 }
-
-/// Port for file saving operations (future use)
-pub trait FileSaver: Send + Sync {
-    /// Save a toolpath to a file
-    fn save(&self, toolpath: &Toolpath, path: &Path) -> FileResult<()>;
-    
-    /// Get supported file extensions for saving
-    fn supported_extensions(&self) -> &[&str];
-}

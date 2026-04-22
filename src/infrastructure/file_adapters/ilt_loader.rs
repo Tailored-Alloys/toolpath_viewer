@@ -43,13 +43,6 @@ impl IltLoader {
         }
     }
 
-    /// Create with a specific coordinate scale
-    pub fn with_scale(scale: f32) -> Self {
-        Self {
-            scale_override: Some(scale),
-        }
-    }
-
     /// Detect compression type from file magic bytes
     fn detect_compression(path: &Path) -> FileResult<CompressionType> {
         let file = File::open(path)?;
@@ -326,47 +319,6 @@ impl FileLoader for IltLoader {
 
     fn supported_extensions(&self) -> &[&str] {
         &["ilt", "cli", "cli.gz"]
-    }
-}
-
-/// Loader specifically for uncompressed CLI files
-pub struct CliLoader;
-
-impl CliLoader {
-    /// Create a new CLI loader
-    pub fn new() -> Self {
-        Self
-    }
-}
-
-impl Default for CliLoader {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl FileLoader for CliLoader {
-    fn load(&self, path: &Path) -> FileResult<Toolpath> {
-        let file = File::open(path).map_err(|e| {
-            if e.kind() == std::io::ErrorKind::NotFound {
-                FileError::NotFound(path.display().to_string())
-            } else if e.kind() == std::io::ErrorKind::PermissionDenied {
-                FileError::PermissionDenied(path.display().to_string())
-            } else {
-                FileError::IoError(e)
-            }
-        })?;
-
-        let parser = CliParser::new();
-        let reader = BufReader::new(file);
-        let mut toolpath = parser.parse(reader)?;
-        toolpath.slice_stack.source_path = Some(path.display().to_string());
-        
-        Ok(toolpath)
-    }
-
-    fn supported_extensions(&self) -> &[&str] {
-        &["cli"]
     }
 }
 

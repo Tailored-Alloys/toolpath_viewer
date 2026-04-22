@@ -2,7 +2,7 @@
 //!
 //! Represents a 2D/3D vector path in a toolpath layer.
 
-use crate::domain::value_objects::{Point2D, Point3D, Color};
+use crate::domain::value_objects::Point2D;
 
 /// Type of vector in a toolpath
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

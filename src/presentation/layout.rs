@@ -3,6 +3,14 @@
 //! Centralizes all layout constants and computes non-overlapping screen regions
 //! for each UI section. Regions are recomputed each frame from the current screen
 //! size and visibility flags (immediate-mode compatible).
+//!
+//! New VS Code–style layout:
+//! - Top: toolbar (full width)
+//! - Left: collapsible sidebar (files + gradient legends)
+//! - Right: vertical layer slider (inline, displaces viewport)
+/// - Bottom: status bar (always)
+/// - Center: viewport (remaining space)
+/// - Floating: tool panel (top-right of viewport), vector player (bottom-center of viewport)
 
 use egui::Rect;
 
@@ -24,37 +32,54 @@ pub const PANEL_MARGIN: f32 = 12.0;
 pub const PANEL_GAP: f32 = 8.0;
 
 /// Width of the right layer slider panel
-pub const LAYER_SLIDER_WIDTH: f32 = 80.0;
-
-/// Width of the left gradient scale panel
-pub const GRADIENT_PANEL_WIDTH: f32 = 130.0;
+pub const LAYER_SLIDER_WIDTH: f32 = 68.0;
 
 /// Tool panel button size
 pub const TOOL_BTN_SIZE: f32 = 28.0;
 
-/// Tool panel icon size
-pub const TOOL_ICON_SIZE: f32 = 14.0;
-
-/// Tool panel estimated height (buttons + frame padding)
-pub const TOOL_PANEL_HEIGHT: f32 = 44.0;
-
 /// Bottom margin for panels
 pub const BOTTOM_MARGIN: f32 = 16.0;
-
-/// Scale bar height reservation (when visible)
-pub const SCALE_BAR_RESERVE: f32 = 48.0;
 
 /// Scale bar drawing margin from screen edge
 pub const SCALE_BAR_MARGIN: f32 = 20.0;
 
+/// Width of the left activity bar (icon strip, always visible)
+pub const ACTIVITY_BAR_WIDTH: f32 = 44.0;
+
+/// Width of the left sidebar content panel when open (default)
+pub const SIDEBAR_WIDTH: f32 = 240.0;
+
+/// Minimum sidebar content panel width (for drag-to-resize)
+pub const SIDEBAR_MIN_WIDTH: f32 = 180.0;
+
+/// Maximum sidebar content panel width (for drag-to-resize)
+pub const SIDEBAR_MAX_WIDTH: f32 = 400.0;
+
+/// Height of the bottom status bar
+pub const STATUS_BAR_HEIGHT: f32 = 24.0;
+
+/// Height of the horizontal vector player bar
+pub const VECTOR_PLAYER_HEIGHT: f32 = 36.0;
+
 /// Compact toolbar width threshold
 pub const COMPACT_TOOLBAR_THRESHOLD: f32 = 900.0;
 
-/// Minimum height for layer slider content to show goto section
-pub const GOTO_SECTION_MIN_HEIGHT: f32 = 250.0;
-
 /// Minimum height for gradient ticks to be visible
 pub const GRADIENT_TICKS_MIN_HEIGHT: f32 = 350.0;
+
+/// Minimum window width before auto-collapsing sidebar
+pub const SIDEBAR_AUTO_COLLAPSE_WIDTH: f32 = 1000.0;
+
+/// Height of the secondary header tab bar (below toolbar)
+pub const TAB_BAR_HEIGHT: f32 = 32.0;
+
+/// Horizontal gap (in logical pixels) between left and right split panes
+pub const SPLIT_GAP: f32 = 8.0;
+
+/// Sidebar content panel horizontal inner_margin (must match sidebar frame inner_margin horizontal).
+/// In egui 0.27, `exact_width(w)` sets the content min-width; the frame's inner_margin
+/// adds to the total panel width claimed. This constant accounts for that.
+pub const SIDEBAR_CONTENT_HPAD: f32 = 8.0;
 
 // ── Visibility flags ─────────────────────────────────────────────────────
 
@@ -63,9 +88,9 @@ pub const GRADIENT_TICKS_MIN_HEIGHT: f32 = 350.0;
 pub struct VisibilityFlags {
     /// Whether a file is loaded (controls layer slider visibility)
     pub has_layers: bool,
-    /// Whether a parameter mode is active (controls gradient panel visibility)
+    /// Whether a parameter mode is active (controls gradient legend in sidebar)
     pub show_gradient: bool,
-    /// Whether the scale bar is visible (affects gradient bottom margin)
+    /// Whether the scale bar is visible
     pub show_scale_bar: bool,
     /// Whether file info popup is open
     pub show_file_info: bool,
@@ -73,8 +98,16 @@ pub struct VisibilityFlags {
     pub show_controls: bool,
     /// Whether the grid is enabled (affects grid label overlay)
     pub show_grid: bool,
-    /// Whether vector-by-vector view is active (controls vector slider visibility)
+    /// Whether vector-by-vector view is active (controls vector player bar)
     pub vector_view_active: bool,
+    /// Whether the sidebar is open
+    pub sidebar_open: bool,
+    /// Whether the tab bar is visible (any open tabs)
+    pub has_tab_bar: bool,
+    /// Dynamic sidebar content panel width (user-resizable, clamped to min/max)
+    pub sidebar_content_width: f32,
+    /// Whether gradient scale overlays are expanded (param, wait)
+    pub gradient_expanded: [bool; 2],
 }
 
 // ── Layout Regions ───────────────────────────────────────────────────────
@@ -94,29 +127,58 @@ pub struct LayoutRegions {
     /// Whether compact toolbar mode is active (narrow window)
     pub compact_toolbar: bool,
 
-    /// Tool panel — top-right, horizontal strip left of slider
+    /// Left sidebar region (collapsible, displaces viewport)
+    pub sidebar: SidebarRegion,
+
+    /// Tool panel — top-right of viewport, floating
     pub tool_panel: ToolPanelRegion,
 
-    /// Right layer slider — full height right side, below tool panel
+    /// Right layer slider — inline, displaces viewport right edge
     pub layer_slider: Option<LayerSliderRegion>,
 
-    /// Vector slider — right side, left of layer slider (visible when vector view active)
-    pub vector_slider: Option<VectorSliderRegion>,
+    /// Bottom status bar — full width, always visible
+    pub status_bar: StatusBarRegion,
 
-    /// Left gradient scale — full height left side
-    pub gradient_panel: Option<GradientRegion>,
+    /// Horizontal vector player bar — above status bar, conditional
+    pub vector_player: Option<VectorPlayerRegion>,
 
-    /// Scale bar — bottom-left corner
+    /// Scale bar — bottom-left of viewport
     pub scale_bar: Option<Rect>,
 
+    /// Gradient scale overlays — floating panels to the left of the tool panel
+    pub gradient_scales: Vec<GradientRegion>,
+
+    /// Secondary header tab bar — below toolbar, shown when files are open
+    pub tab_bar: Option<Rect>,
+
     /// Viewport — the central area where GL content renders
+    /// Displaces for sidebar, layer slider, toolbar, tab bar, status bar, and vector player.
     pub viewport: Rect,
+}
+
+/// Sidebar positioning info (activity bar + optional content panel)
+#[derive(Debug, Clone)]
+pub struct SidebarRegion {
+    /// Whether the content panel is currently visible (sidebar_open && not auto-collapsed)
+    pub content_visible: bool,
+    /// Width of the activity bar (always visible)
+    pub activity_bar_width: f32,
+    /// Width of the content panel (0 when collapsed)
+    pub content_width: f32,
+    /// Total width displaced by sidebar (activity_bar + content)
+    pub total_width: f32,
+    /// Top position (below toolbar)
+    pub top: f32,
+    /// Bottom position (above status bar / vector player)
+    pub bottom: f32,
+    /// Available content height inside the sidebar
+    pub content_height: f32,
 }
 
 /// Tool panel positioning info
 #[derive(Debug, Clone)]
 pub struct ToolPanelRegion {
-    /// Position for the egui Area (anchor point, right-top pivot)
+    /// Position for the egui Area (left-top corner)
     pub anchor_pos: egui::Pos2,
     /// Top of the tool panel in screen coords
     pub top: f32,
@@ -131,11 +193,9 @@ pub struct LayerSliderRegion {
     pub content_height: f32,
     /// Width of the panel
     pub width: f32,
-    /// Whether to show the goto section
-    pub show_goto: bool,
 }
 
-/// Gradient panel positioning info
+/// Gradient panel positioning info (used for viewport overlay)
 #[derive(Debug, Clone)]
 pub struct GradientRegion {
     /// Position for the egui Area (top-left)
@@ -148,62 +208,147 @@ pub struct GradientRegion {
     pub show_ticks: bool,
 }
 
-/// Vector slider positioning info
+/// Width of the gradient scale overlay panel
+pub const GRADIENT_SCALE_WIDTH: f32 = 80.0;
+
+/// Status bar positioning info
 #[derive(Debug, Clone)]
-pub struct VectorSliderRegion {
-    /// Position for the egui Area (top-left)
-    pub pos: egui::Pos2,
-    /// Available content height (inside frame, excluding padding)
-    pub content_height: f32,
-    /// Width of the panel
+pub struct StatusBarRegion {
+    /// Full rect for the status bar
+    pub rect: Rect,
+    /// Height of the status bar
+    pub height: f32,
+}
+
+/// Vector player bar positioning info (floating, centered above status bar)
+#[derive(Debug, Clone)]
+pub struct VectorPlayerRegion {
+    /// Anchor position (center-top of the floating bar)
+    pub anchor_pos: egui::Pos2,
+    /// Width of the floating bar
     pub width: f32,
-    /// Whether to show the goto section
-    pub show_goto: bool,
+    /// Height of the bar
+    pub height: f32,
 }
 
 impl LayoutRegions {
     /// Compute all layout regions from current screen size and visibility flags.
     ///
-    /// Regions are computed relative to each other to prevent overlap:
-    /// - Toolbar is always at the top
-    /// - Tool panel is below toolbar, right-aligned, left of slider
-    /// - Layer slider is right side, below tool panel
-    /// - Gradient panel is left side, below toolbar
-    /// - Scale bar is bottom-left
-    /// - Viewport fills the remaining central area
+    /// Layout structure (displacing viewport):
+    /// ```text
+    /// ┌───────────────────────────────────────────┐
+    /// │                 Toolbar                    │
+    /// ├──────┬──────┬───────────────────┬──────────┤
+    /// │      │      │   Tab Bar         │          │
+    /// │ Act. │ Side ├───────────────────┤  Layer   │
+    /// │ Bar  │ bar  │    Viewport       │  Slider  │
+    /// │      │      │  [Vector Player]  │          │
+    /// ├──────┴──────┴───────────────────┴──────────┤
+    /// │              Status Bar                    │
+    /// └───────────────────────────────────────────┘
+    /// ```
     pub fn compute(screen: Rect, flags: &VisibilityFlags) -> Self {
         let screen_w = screen.width();
         let screen_h = screen.height();
         let compact_toolbar = screen_w < COMPACT_TOOLBAR_THRESHOLD;
 
         // ── Toolbar ──
+        // Note: egui 0.27 exact_height(h) sets the content min-height; the frame's
+        // inner_margin (TOOLBAR_FRAME_VPAD top+bottom) adds to the actual panel height.
         let toolbar = Rect::from_min_size(
             screen.left_top(),
-            egui::vec2(screen_w, TOOLBAR_HEIGHT),
+            egui::vec2(screen_w, TOOLBAR_BOTTOM),
         );
 
-        // ── Tool panel ──
-        // Positioned top-right, left of the layer slider area
-        let right_panels_width = if flags.vector_view_active && flags.has_layers {
-            LAYER_SLIDER_WIDTH + PANEL_GAP + LAYER_SLIDER_WIDTH
+        // ── Sidebar width (computed early so tab bar can start after it) ──
+        let sidebar_auto_collapsed = screen_w < SIDEBAR_AUTO_COLLAPSE_WIDTH;
+        let content_visible = flags.sidebar_open && !sidebar_auto_collapsed;
+        let content_width = if content_visible {
+            flags.sidebar_content_width.clamp(SIDEBAR_MIN_WIDTH, SIDEBAR_MAX_WIDTH)
         } else {
-            LAYER_SLIDER_WIDTH
+            0.0
         };
-        let tool_panel_right_offset = right_panels_width + PANEL_MARGIN + PANEL_GAP;
-        let tool_panel_top = TOOLBAR_BOTTOM + PANEL_GAP;
-        let tool_panel = ToolPanelRegion {
-            anchor_pos: egui::pos2(screen.right() - tool_panel_right_offset, tool_panel_top),
-            top: tool_panel_top,
+        // In egui 0.27, exact_width(w) sets content min-width; the frame's inner_margin
+        // adds to the total panel width. Account for this when sidebar is visible.
+        let content_margin = if content_visible { 2.0 * SIDEBAR_CONTENT_HPAD } else { 0.0 };
+        let sidebar_width = ACTIVITY_BAR_WIDTH + content_width + content_margin;
+
+        // ── Tab bar (secondary header, only spans the canvas area right of sidebar) ──
+        let tab_bar = if flags.has_tab_bar {
+            Some(Rect::from_min_size(
+                egui::pos2(screen.left() + sidebar_width, TOOLBAR_BOTTOM),
+                egui::vec2((screen_w - sidebar_width).max(0.0), TAB_BAR_HEIGHT),
+            ))
+        } else {
+            None
         };
 
-        // ── Layer slider ──
+        // Both sidebar and canvas start below the tab bar (when visible),
+        // since the tab bar is a TopBottomPanel that claims vertical space.
+        let content_top = TOOLBAR_BOTTOM + if flags.has_tab_bar { TAB_BAR_HEIGHT } else { 0.0 };
+
+        // ── Status bar (always at bottom) ──
+        let status_bar_rect = Rect::from_min_size(
+            egui::pos2(screen.left(), screen_h - STATUS_BAR_HEIGHT),
+            egui::vec2(screen_w, STATUS_BAR_HEIGHT),
+        );
+        let status_bar = StatusBarRegion {
+            rect: status_bar_rect,
+            height: STATUS_BAR_HEIGHT,
+        };
+
+        // Bottom edge of the viewport area (above status bar only — vector player floats)
+        let viewport_bottom = screen_h - STATUS_BAR_HEIGHT;
+
+        // ── Vector player bar (floating, centered above status bar) ──
+        let vector_player = if flags.vector_view_active && flags.has_layers {
+            // Compute the floating bar width: spans the viewport center, capped at 600px
+            let vp_left = screen.left() + sidebar_width;
+            let layer_slider_right_w = if flags.has_layers {
+                LAYER_SLIDER_WIDTH + PANEL_MARGIN
+            } else {
+                0.0
+            };
+            let vp_right = screen.right() - layer_slider_right_w;
+            let vp_center_x = (vp_left + vp_right) / 2.0;
+            let vp_available_w = (vp_right - vp_left).max(0.0);
+            let bar_width = (vp_available_w - 2.0 * PANEL_MARGIN).min(600.0).max(200.0);
+            let bar_x = vp_center_x - bar_width / 2.0;
+            let bar_y = viewport_bottom - VECTOR_PLAYER_HEIGHT - PANEL_MARGIN;
+            Some(VectorPlayerRegion {
+                anchor_pos: egui::pos2(bar_x, bar_y),
+                width: bar_width,
+                height: VECTOR_PLAYER_HEIGHT,
+            })
+        } else {
+            None
+        };
+
+        // ── Sidebar (activity bar always visible + collapsible content panel) ──
+        let sidebar_bottom = viewport_bottom;
+        let sidebar_content_h = (sidebar_bottom - content_top - 16.0).max(100.0);
+        let sidebar = SidebarRegion {
+            content_visible,
+            activity_bar_width: ACTIVITY_BAR_WIDTH,
+            content_width,
+            total_width: sidebar_width,
+            top: content_top,
+            bottom: sidebar_bottom,
+            content_height: sidebar_content_h,
+        };
+
+        // ── Layer slider (right, inline, displaces viewport) ──
+        let layer_slider_right_width = if flags.has_layers {
+            LAYER_SLIDER_WIDTH + PANEL_MARGIN
+        } else {
+            0.0
+        };
+
         let layer_slider = if flags.has_layers {
-            let slider_top = TOOLBAR_BOTTOM + PANEL_MARGIN;
-            let available_h = (screen_h - slider_top - BOTTOM_MARGIN).max(120.0);
-            let frame_overhead = 16.0; // inner_margin(8,8)
+            let slider_top = content_top + PANEL_MARGIN;
+            let available_h = (viewport_bottom - slider_top - BOTTOM_MARGIN).max(120.0);
+            let frame_overhead = 16.0;
             let content_h = available_h - frame_overhead;
-            let show_goto = content_h > GOTO_SECTION_MIN_HEIGHT;
-
             Some(LayerSliderRegion {
                 pos: egui::pos2(
                     screen.right() - PANEL_MARGIN - LAYER_SLIDER_WIDTH,
@@ -211,57 +356,53 @@ impl LayoutRegions {
                 ),
                 content_height: content_h,
                 width: LAYER_SLIDER_WIDTH,
-                show_goto,
             })
         } else {
             None
         };
 
-        // ── Vector slider ──
-        let vector_slider = if flags.has_layers && flags.vector_view_active {
-            let slider_top = TOOLBAR_BOTTOM + PANEL_MARGIN;
-            let available_h = (screen_h - slider_top - BOTTOM_MARGIN).max(120.0);
+        // ── Tool panel (floating, to the left of layer slider) ──
+        // Width = button size + inner_margin (4+4) = 36
+        let tool_panel_width = TOOL_BTN_SIZE + 8.0;
+        let tool_panel_right_offset = layer_slider_right_width + PANEL_GAP;
+        let tool_panel_left = screen.right() - tool_panel_right_offset - tool_panel_width;
+        let tool_panel_top = content_top + PANEL_MARGIN; // same top as layer slider
+        let tool_panel = ToolPanelRegion {
+            anchor_pos: egui::pos2(tool_panel_left, tool_panel_top),
+            top: tool_panel_top,
+        };
+
+        // ── Gradient scale overlays (left side of viewport, right of sidebar) ──
+        let mut gradient_scales = Vec::new();
+        if flags.show_gradient {
+            let scale_w = GRADIENT_SCALE_WIDTH;
+            let scale_left = sidebar_width + PANEL_MARGIN;
+            let scale_top = content_top + PANEL_MARGIN;
+            let available_h = (viewport_bottom - scale_top - BOTTOM_MARGIN).max(120.0);
             let frame_overhead = 16.0;
             let content_h = available_h - frame_overhead;
-            let show_goto = content_h > GOTO_SECTION_MIN_HEIGHT;
-
-            Some(VectorSliderRegion {
-                pos: egui::pos2(
-                    screen.right() - PANEL_MARGIN - LAYER_SLIDER_WIDTH - PANEL_GAP - LAYER_SLIDER_WIDTH,
-                    slider_top,
-                ),
+            let show_ticks = content_h > GRADIENT_TICKS_MIN_HEIGHT;
+            gradient_scales.push(GradientRegion {
+                pos: egui::pos2(scale_left, scale_top),
                 content_height: content_h,
-                width: LAYER_SLIDER_WIDTH,
-                show_goto,
-            })
-        } else {
-            None
-        };
-
-        // ── Gradient panel ──
-        let gradient_panel = if flags.show_gradient {
-            let grad_top = TOOLBAR_BOTTOM + PANEL_MARGIN;
-            // Scale bar shifts right when gradient is visible, so no vertical reservation needed
-            let grad_bottom_margin = BOTTOM_MARGIN;
-            let available_h = (screen_h - grad_top - grad_bottom_margin).max(200.0);
-            let frame_overhead = 16.0; // inner_margin(12h, 8v) → 16px vertical
-            let content_h = available_h - frame_overhead;
-            let show_ticks = available_h > GRADIENT_TICKS_MIN_HEIGHT;
-
-            Some(GradientRegion {
-                pos: egui::pos2(PANEL_MARGIN, grad_top),
-                content_height: content_h,
-                width: GRADIENT_PANEL_WIDTH,
+                width: scale_w,
                 show_ticks,
-            })
-        } else {
-            None
-        };
+            });
+        }
 
         // ── Scale bar ──
+        // Shift right if gradient scale overlays are visible to avoid overlap
+        let scale_bar_left = if gradient_scales.is_empty() {
+            sidebar_width + SCALE_BAR_MARGIN
+        } else {
+            sidebar_width + PANEL_MARGIN + GRADIENT_SCALE_WIDTH + PANEL_GAP
+        };
         let scale_bar = if flags.show_scale_bar {
             Some(Rect::from_min_size(
-                egui::pos2(SCALE_BAR_MARGIN, screen_h - SCALE_BAR_MARGIN - 30.0),
+                egui::pos2(
+                    scale_bar_left,
+                    viewport_bottom - SCALE_BAR_MARGIN - 30.0,
+                ),
                 egui::vec2(220.0, 30.0),
             ))
         } else {
@@ -269,60 +410,36 @@ impl LayoutRegions {
         };
 
         // ── Viewport ──
-        // The viewport is the full area below the toolbar.
-        // Floating panels overlay it but don't reduce it.
+        // The viewport displaces for sidebar (left), layer slider (right),
+        // toolbar (top), vector player + status bar (bottom).
         let viewport = Rect::from_min_max(
-            egui::pos2(screen.left(), toolbar.bottom()),
-            screen.right_bottom(),
+            egui::pos2(screen.left() + sidebar_width, content_top),
+            egui::pos2(screen.right() - layer_slider_right_width, viewport_bottom),
         );
 
-        let regions = Self {
+        Self {
             screen,
             toolbar,
             compact_toolbar,
+            sidebar,
             tool_panel,
             layer_slider,
-            vector_slider,
-            gradient_panel,
+            status_bar,
+            vector_player,
             scale_bar,
+            gradient_scales,
+            tab_bar,
             viewport,
-        };
-
-        #[cfg(debug_assertions)]
-        regions.validate_no_overlap();
-
-        regions
+        }
     }
 
-    /// In debug builds, validate that no two solid panels overlap.
-    #[cfg(debug_assertions)]
-    fn validate_no_overlap(&self) {
-        let mut rects: Vec<(&str, Rect)> = vec![("toolbar", self.toolbar)];
+    /// Get the effective sidebar width (activity bar + content when open)
+    pub fn sidebar_width(&self) -> f32 {
+        self.sidebar.total_width
+    }
 
-        if let Some(ref slider) = self.layer_slider {
-            let r = Rect::from_min_size(slider.pos, egui::vec2(slider.width, slider.content_height + 16.0));
-            rects.push(("layer_slider", r));
-        }
-        if let Some(ref vs) = self.vector_slider {
-            let r = Rect::from_min_size(vs.pos, egui::vec2(vs.width, vs.content_height + 16.0));
-            rects.push(("vector_slider", r));
-        }
-        if let Some(ref grad) = self.gradient_panel {
-            let r = Rect::from_min_size(grad.pos, egui::vec2(grad.width, grad.content_height + 16.0));
-            rects.push(("gradient_panel", r));
-        }
-
-        // Check pairwise (skip toolbar vs floating panels since they overlay the viewport)
-        for i in 1..rects.len() {
-            for j in (i + 1)..rects.len() {
-                let (name_a, rect_a) = &rects[i];
-                let (name_b, rect_b) = &rects[j];
-                debug_assert!(
-                    !rect_a.intersects(*rect_b),
-                    "Layout overlap detected between {} and {}: {:?} vs {:?}",
-                    name_a, name_b, rect_a, rect_b
-                );
-            }
-        }
+    /// Get the bottom edge of the viewport (for coordinate transforms)
+    pub fn viewport_bottom(&self) -> f32 {
+        self.viewport.bottom()
     }
 }

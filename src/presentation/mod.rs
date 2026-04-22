@@ -15,13 +15,14 @@ mod app;
 mod window;
 mod input;
 pub mod layout;
+pub mod palette;
 pub mod theme;
 pub mod components;
 mod ui;
+pub mod tab_state;
 
 pub use app::*;
 pub use window::*;
 pub use input::*;
 pub use ui::*;
-pub use layout::TOOLBAR_HEIGHT;
-pub use layout::TOOLBAR_BOTTOM;
+pub use tab_state::TabManager;

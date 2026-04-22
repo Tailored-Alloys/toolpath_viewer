@@ -74,22 +74,6 @@ impl ShaderProgram {
             gl::UniformMatrix4fv(location, 1, gl::FALSE, value.as_ptr());
         }
     }
-
-    /// Set uniform vec4
-    pub fn set_vec4(&self, name: &str, x: f32, y: f32, z: f32, w: f32) {
-        unsafe {
-            let location = self.get_uniform_location(name);
-            gl::Uniform4f(location, x, y, z, w);
-        }
-    }
-
-    /// Set uniform float
-    pub fn set_float(&self, name: &str, value: f32) {
-        unsafe {
-            let location = self.get_uniform_location(name);
-            gl::Uniform1f(location, value);
-        }
-    }
 }
 
 impl Drop for ShaderProgram {
@@ -161,31 +145,5 @@ out vec4 FragColor;
 
 void main() {
     FragColor = vColor;
-}
-"#;
-
-/// Simple vertex shader (single color)
-pub const SIMPLE_VERTEX_SHADER: &str = r#"
-#version 330 core
-
-layout (location = 0) in vec2 aPos;
-
-uniform mat4 uProjection;
-uniform mat4 uView;
-
-void main() {
-    gl_Position = uProjection * uView * vec4(aPos, 0.0, 1.0);
-}
-"#;
-
-/// Simple fragment shader (uniform color)
-pub const SIMPLE_FRAGMENT_SHADER: &str = r#"
-#version 330 core
-
-uniform vec4 uColor;
-out vec4 FragColor;
-
-void main() {
-    FragColor = uColor;
 }
 "#;

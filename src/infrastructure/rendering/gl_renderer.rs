@@ -7,10 +7,10 @@ use crate::application::use_cases::ColorScheme;
 use crate::domain::entities::{Layer, Vector, VectorType};
 use crate::domain::value_objects::{Color, Point2D};
 use crate::infrastructure::rendering::{
-    GridRenderer, LineBatch, ShaderProgram,
+    GridRenderer, LineBatch, LineVertex, ShaderProgram,
     DEFAULT_FRAGMENT_SHADER, DEFAULT_VERTEX_SHADER,
 };
-use log::{debug, info};
+use log::info;
 
 /// Create an orthographic projection matrix
 fn ortho(left: f32, right: f32, bottom: f32, top: f32, near: f32, far: f32) -> [f32; 16] {
@@ -50,10 +50,13 @@ const ARROW_ARM_MIN: f32 = 0.02;
 /// Maximum arrow arm length (world units, mm) — prevents oversized arrows on long vectors.
 const ARROW_ARM_MAX: f32 = 0.15;
 
-/// Minimum star marker radius (world units, mm) — prevents invisible wait time markers.
-const STAR_RADIUS_MIN: f32 = 0.015;
-/// Maximum star marker radius (world units, mm) — prevents oversized wait time markers.
-const STAR_RADIUS_MAX: f32 = 0.12;
+/// Minimum circle marker radius (world units, mm) — prevents invisible wait time markers.
+const CIRCLE_RADIUS_MIN: f32 = 0.015;
+/// Maximum circle marker radius (world units, mm) — prevents oversized wait time markers.
+const CIRCLE_RADIUS_MAX: f32 = 0.12;
+
+/// Number of line segments used to approximate a circle.
+const CIRCLE_SEGMENTS: usize = 20;
 
 /// Generate per-vertex gradient colors for a polyline, fading from transparent
 /// at the start to the full color at the end to indicate scan direction.
@@ -102,25 +105,22 @@ fn add_arrowhead(batch: &mut LineBatch, tip: &Point2D, dx: f32, dy: f32, arm_len
     batch.add_line(tip, &right, color);
 }
 
-/// Add a star/asterisk marker (*) to `batch` centered at `center`.
-/// Draws 3 crossing line segments (|, /, \) of half-length `r`.
-fn add_star_marker(batch: &mut LineBatch, center: &Point2D, r: f32, color: &Color) {
-    // Vertical line |
-    let top = Point2D::new(center.x, center.y + r);
-    let bot = Point2D::new(center.x, center.y - r);
-    batch.add_line(&top, &bot, color);
-
-    // 60° line /
-    let cos60: f32 = 0.5;
-    let sin60: f32 = 0.866_025_4;
-    let a = Point2D::new(center.x + r * cos60, center.y + r * sin60);
-    let b = Point2D::new(center.x - r * cos60, center.y - r * sin60);
-    batch.add_line(&a, &b, color);
-
-    // 120° line \
-    let c = Point2D::new(center.x - r * cos60, center.y + r * sin60);
-    let d = Point2D::new(center.x + r * cos60, center.y - r * sin60);
-    batch.add_line(&c, &d, color);
+/// Add a filled circle marker to `batch` centered at `center` with radius `r`.
+/// Creates a center vertex + perimeter vertices for GL_TRIANGLE_FAN rendering.
+fn add_circle_marker(batch: &mut LineBatch, center: &Point2D, r: f32, color: &Color) {
+    let start = batch.vertex_count();
+    // Center vertex
+    batch.vertices_mut().push(LineVertex::from_point(center, color));
+    // Perimeter vertices (closing the circle)
+    for i in 0..=CIRCLE_SEGMENTS {
+        let angle = 2.0 * std::f32::consts::PI * (i as f32) / (CIRCLE_SEGMENTS as f32);
+        let pt = Point2D::new(
+            center.x + r * angle.cos(),
+            center.y + r * angle.sin(),
+        );
+        batch.vertices_mut().push(LineVertex::from_point(&pt, color));
+    }
+    batch.push_segment(start, CIRCLE_SEGMENTS + 2);
 }
 
 /// Compute marker size from layer bounds (0.5% of bounding diagonal).
@@ -155,11 +155,15 @@ pub struct GlRenderer {
     /// Grid renderer
     grid_renderer: GridRenderer,
     color_scheme: ColorScheme,
+    /// Gradient color stops for parameter visualization
+    gradient_stops: Vec<(f32, Color)>,
     initialized: bool,
     /// Track last hatch count to reduce log spam
     last_hatch_count: usize,
     /// Whether we've logged shader/uniform diagnostics
     logged_once: bool,
+    /// Whether anti-aliasing (line smoothing) is enabled
+    antialiasing: bool,
 }
 
 impl GlRenderer {
@@ -180,15 +184,46 @@ impl GlRenderer {
             show_wait_markers: true,
             grid_renderer: GridRenderer::new(),
             color_scheme: ColorScheme::default(),
+            gradient_stops: Vec::new(),
             initialized: false,
             last_hatch_count: usize::MAX,
             logged_once: false,
+            antialiasing: true,
         }
     }
 
     /// Set color scheme
     pub fn set_color_scheme(&mut self, scheme: ColorScheme) {
         self.color_scheme = scheme;
+    }
+
+    /// Set gradient stops for parameter visualization.
+    pub fn set_gradient_stops(&mut self, stops: Vec<(f32, Color)>) {
+        self.gradient_stops = stops;
+    }
+
+    /// Evaluate the active gradient (or fallback to viridis) at parameter t ∈ [0,1].
+    fn eval_gradient(&self, t: f32) -> Color {
+        let t = t.clamp(0.0, 1.0);
+        let stops = &self.gradient_stops;
+        if stops.len() < 2 {
+            return Color::viridis_gradient(t);
+        }
+        if t <= stops[0].0 {
+            return stops[0].1;
+        }
+        if t >= stops[stops.len() - 1].0 {
+            return stops[stops.len() - 1].1;
+        }
+        for i in 0..stops.len() - 1 {
+            let (t0, c0) = &stops[i];
+            let (t1, c1) = &stops[i + 1];
+            if t >= *t0 && t <= *t1 {
+                let s = if (t1 - t0).abs() < 1e-6 { 0.0 } else { (t - t0) / (t1 - t0) };
+                return c0.blend(c1, s);
+            }
+        }
+        stops[stops.len() - 1].1
     }
 
     /// Set horizontal view offset (to shift content away from UI panel)
@@ -206,8 +241,31 @@ impl GlRenderer {
         self.scale_factor = factor;
     }
 
+    /// Set a sub-viewport for split rendering.
+    /// Enables scissor test to clip to the given region.
+    /// `x`, `y` are bottom-left in physical pixels (GL convention).
+    pub fn set_sub_viewport(&mut self, x: i32, y: i32, width: u32, height: u32) {
+        unsafe {
+            gl::Viewport(x, y, width as i32, height as i32);
+            gl::Enable(gl::SCISSOR_TEST);
+            gl::Scissor(x, y, width as i32, height as i32);
+        }
+        self.width = width;
+        self.height = height;
+    }
+
+    /// Restore full viewport after split rendering.
+    pub fn restore_full_viewport(&mut self, full_width: u32, full_height: u32) {
+        unsafe {
+            gl::Disable(gl::SCISSOR_TEST);
+            gl::Viewport(0, 0, full_width as i32, full_height as i32);
+        }
+        self.width = full_width;
+        self.height = full_height;
+    }
+
     /// Render the background grid before layer content.
-    pub fn render_grid(&mut self, view: &ViewState) -> RenderResult<()> {
+    pub fn render_grid(&mut self, view: &ViewState, options: &DisplayOptions) -> RenderResult<()> {
         let shader = self.shader.as_ref().ok_or_else(|| {
             RenderError::InvalidState("Shader not initialized".to_string())
         })?;
@@ -229,7 +287,12 @@ impl GlRenderer {
 
         let viewport_w = logical_w;
         let viewport_h = logical_h;
-        self.grid_renderer.prepare(view, viewport_w, viewport_h);
+        self.grid_renderer.prepare_with_colors(
+            view, viewport_w, viewport_h,
+            options.grid_minor_color, options.grid_major_color,
+            options.grid_line_width_minor, options.grid_line_width_major,
+            options.grid_opacity,
+        );
         self.grid_renderer.render();
 
         Ok(())
@@ -294,12 +357,12 @@ impl GlRenderer {
         self.arrow_batch.clear();
         self.wait_marker_batch.clear();
         self.show_wait_markers = options.show_wait_markers;
+        self.antialiasing = options.antialiasing;
 
         let dim_color = Color::rgb(0.3, 0.3, 0.3);
 
         let marker_size = compute_marker_size(layer);
-        let arrow_arm = (marker_size * 0.8).clamp(ARROW_ARM_MIN, ARROW_ARM_MAX);
-        let star_radius = (marker_size * 0.6).clamp(STAR_RADIUS_MIN, STAR_RADIUS_MAX);
+        let arrow_arm = (marker_size * 0.8 * options.arrow_size_multiplier).clamp(ARROW_ARM_MIN, ARROW_ARM_MAX);
         // Place arrows every `arrow_spacing` world-units along polylines
         let arrow_spacing = marker_size * 8.0;
 
@@ -311,12 +374,14 @@ impl GlRenderer {
 
         for (vec_idx, vector) in layer.vectors.iter().enumerate() {
             let is_active = vec_idx < vector_limit;
-            // Determine color: parameter gradient when a mode is active, else type-based
-            let color = if let Some(param_mode) = options.param_mode {
+            // Determine color: file override > parameter gradient > type-based
+            let color = if let Some(ref file_color) = options.file_color_override {
+                *file_color
+            } else if let Some(param_mode) = options.param_mode {
                 let param_value = match param_mode {
                     ParameterMode::Power => vector.parameters.power,
                     ParameterMode::Speed => vector.parameters.speed,
-                    ParameterMode::WaitTime => vector.parameters.wait_time,
+
                 };
                 match param_value {
                     Some(val) => {
@@ -329,7 +394,7 @@ impl GlRenderer {
                         } else {
                             0.5
                         };
-                        Color::viridis_gradient(t)
+                        self.eval_gradient(t)
                     }
                     None => dim_color, // no param data, show dimmed
                 }
@@ -339,7 +404,7 @@ impl GlRenderer {
 
             // Mute future vectors when vector-by-vector view is active
             let color = if !is_active && options.max_vector_index.is_some() {
-                color.with_alpha(0.15)
+                color.with_alpha(options.future_vector_alpha)
             } else {
                 color
             };
@@ -348,7 +413,7 @@ impl GlRenderer {
             let mut visible = false;
 
             // Use gradient coloring for active vectors in vector view mode
-            let use_gradient = is_active && options.max_vector_index.is_some();
+            let use_gradient = is_active && options.max_vector_index.is_some() && options.show_direction_gradient;
 
             match vector.vector_type {
                 VectorType::Boundary => {
@@ -451,29 +516,34 @@ impl GlRenderer {
                 }
             }
 
-            // --- Wait time markers (at END of vectors with wait_time) ---
-            // Color based on wait time value using heat gradient
+            // --- Wait time markers (circles at END of vectors with wait_time) ---
+            // Circle SIZE represents the wait time value; color is a fixed marker color.
             if let Some(wait_val) = vector.parameters.wait_time {
                 if vector.points.len() >= 2 {
-                    // Compute normalized value for viridis gradient
+                    // Compute normalized value for circle sizing
                     let range = options.wait_time_max - options.wait_time_min;
                     let t = if range > 0.0 {
-                        (wait_val - options.wait_time_min) / range
+                        ((wait_val - options.wait_time_min) / range).clamp(0.0, 1.0)
                     } else {
                         0.5
                     };
-                    let wait_color = Color::viridis_gradient(t);
+                    // Fixed warm amber color for wait markers (visible on both light/dark)
+                    let wait_color = Color { r: 1.0, g: 0.6, b: 0.15, a: 0.85 };
+                    // Radius scales linearly with normalized wait time
+                    let circle_radius = ((CIRCLE_RADIUS_MIN + t * (CIRCLE_RADIUS_MAX - CIRCLE_RADIUS_MIN))
+                        * options.wait_marker_size_multiplier)
+                        .clamp(CIRCLE_RADIUS_MIN, CIRCLE_RADIUS_MAX);
                     
                     match vector.vector_type {
                         VectorType::Hatch => {
-                            // Star at endpoint (p1) where the laser waits
+                            // Circle at endpoint (p1) where the laser waits
                             let p1 = &vector.points[1];
-                            add_star_marker(&mut self.wait_marker_batch, p1, star_radius, &wait_color);
+                            add_circle_marker(&mut self.wait_marker_batch, p1, circle_radius, &wait_color);
                         }
                         _ => {
-                            // For polylines, star at the last point
+                            // For polylines, circle at the last point
                             if let Some(last) = vector.points.last() {
-                                add_star_marker(&mut self.wait_marker_batch, last, star_radius, &wait_color);
+                                add_circle_marker(&mut self.wait_marker_batch, last, circle_radius, &wait_color);
                             }
                         }
                     }
@@ -481,11 +551,11 @@ impl GlRenderer {
             }
         }
 
-        self.contour_batch.set_line_width(options.line_width);
-        self.boundary_batch.set_line_width(options.line_width * 1.5);
-        self.hatch_batch.set_line_width(options.line_width * 0.8);
-        self.arrow_batch.set_line_width(options.line_width * 0.8);
-        self.wait_marker_batch.set_line_width(options.line_width * 1.5);
+        self.contour_batch.set_line_width(options.line_width * options.contour_width_multiplier);
+        self.boundary_batch.set_line_width(options.line_width * options.boundary_width_multiplier);
+        self.hatch_batch.set_line_width(options.line_width * options.hatch_width_multiplier);
+        self.arrow_batch.set_line_width(options.line_width * options.hatch_width_multiplier);
+        self.wait_marker_batch.set_line_width(options.line_width * options.boundary_width_multiplier);
 
         let hatch_count = self.hatch_batch.vertex_count() / 2;
         if hatch_count != self.last_hatch_count {
@@ -547,7 +617,7 @@ impl GlRenderer {
         self.boundary_batch.render();
         self.arrow_batch.render();
         if self.show_wait_markers {
-            self.wait_marker_batch.render();
+            self.wait_marker_batch.render_as_fans();
         }
 
         Ok(())
@@ -617,7 +687,11 @@ impl Renderer for GlRenderer {
             gl::Viewport(0, 0, self.width as i32, self.height as i32);
             gl::Enable(gl::BLEND);
             gl::BlendFunc(gl::SRC_ALPHA, gl::ONE_MINUS_SRC_ALPHA);
-            gl::Enable(gl::LINE_SMOOTH);
+            if self.antialiasing {
+                gl::Enable(gl::LINE_SMOOTH);
+            } else {
+                gl::Disable(gl::LINE_SMOOTH);
+            }
         }
         Ok(())
     }

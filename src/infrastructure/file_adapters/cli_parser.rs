@@ -16,10 +16,10 @@
 use crate::application::ports::{FileError, FileResult};
 use crate::domain::entities::{Layer, LayerParameters, SliceStack, Toolpath, ToolpathMetadata, Vector, VectorType};
 use crate::domain::value_objects::Point2D;
-use log::{debug, info, trace, warn};
+use log::{debug, info, trace};
 use rayon::prelude::*;
 use std::collections::HashMap;
-use std::io::{BufRead, BufReader, Read};
+use std::io::{BufReader, Read};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 /// CLI file parser
@@ -698,25 +698,6 @@ impl CliParserState {
         self.vector_id_counter += 1;
         self.vector_id_counter
     }
-
-    fn finalize(mut self) -> FileResult<Toolpath> {
-        // Add last layer if exists, attaching accumulated parameters
-        if let Some(mut layer) = self.current_layer.take() {
-            self.attach_params_to_layer(&mut layer);
-            self.layers.push(layer);
-        }
-
-        // Sort layers by Z height
-        self.layers.sort_by(|a, b| a.z_height.partial_cmp(&b.z_height).unwrap());
-        
-        // Update layer indices
-        for (i, layer) in self.layers.iter_mut().enumerate() {
-            layer.index = i;
-        }
-
-        let slice_stack = SliceStack::with_layers("CLI File", self.layers);
-        Ok(Toolpath::with_metadata(slice_stack, self.metadata))
-    }
 }
 
 #[cfg(test)]
@@ -758,7 +739,7 @@ $$GEOMETRYEND
         let toolpath = parser.parse(Cursor::new(cli_data)).unwrap();
         
         let layer = toolpath.slice_stack.get_layer(0).unwrap();
-        assert_eq!(layer.hatches().len(), 2);
+        assert_eq!(layer.vectors.iter().filter(|v| v.vector_type == VectorType::Hatch).count(), 2);
     }
 
     #[test]
