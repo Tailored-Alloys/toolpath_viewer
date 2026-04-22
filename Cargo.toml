@@ -1,6 +1,6 @@
 [package]
 name = "toolpath_viewer"
-version = "1.2.1"
+version = "1.2.2"
 edition = "2021"
 description = "A high-performance toolpath viewer for manufacturing applications"
 authors = ["Tailored Alloys", "Daniyal Khan"]

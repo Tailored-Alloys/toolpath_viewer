@@ -4,7 +4,7 @@
 ; ============================================================
 
 #define MyAppName "Toolpath Viewer"
-#define MyAppVersion "1.2.1"
+#define MyAppVersion "1.2.2"
 #define MyAppPublisher "Tailored Alloys"
 #define MyAppExeName "toolpath_viewer.exe"
 #define MyAppURL "https://github.com/Tailored-Alloys/toolpath_viewer"
