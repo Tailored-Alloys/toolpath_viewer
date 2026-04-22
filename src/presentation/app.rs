@@ -89,7 +89,7 @@ impl App {
         let app_config = config_manager.load().unwrap_or_default();
 
         let config = WindowConfig {
-            title: app_config.window.title,
+            title: format!("Toolpath Viewer [{}]", crate::APP_VERSION),
             width: app_config.window.width,
             height: app_config.window.height,
             ..Default::default()
