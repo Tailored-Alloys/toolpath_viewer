@@ -40,6 +40,21 @@ jobs:
       - name: Build release binary
         run: cargo build --release
 
+      - name: Sign release binary
+        uses: azure/trusted-signing-action@v0.5.0
+        with:
+          azure-tenant-id: ${{ vars.SIGN_AZURE_TENANT_ID }}
+          azure-client-id: ${{ vars.SIGN_AZURE_CLIENT_ID }}
+          azure-client-secret: ${{ secrets.SIGN_AZURE_CLIENT_SECRET }}
+          endpoint: ${{ vars.SIGN_AZURE_ENDPOINT }}
+          trusted-signing-account-name: ${{ vars.SIGN_AZURE_ACCOUNT }}
+          certificate-profile-name: ${{ vars.SIGN_AZURE_CERT_PROFILE }}
+          files-folder: target/release
+          files-folder-filter: exe
+          file-digest: SHA256
+          timestamp-rfc3161: ${{ vars.SIGN_TIMESTAMP_URL }}
+          timestamp-digest: SHA256
+
       - name: Extract version from Cargo.toml
         id: version
         shell: pwsh
@@ -60,6 +75,21 @@ jobs:
         run: |
           & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer\toolpath_viewer.iss
           Get-ChildItem installer\output\
+
+      - name: Sign installer
+        uses: azure/trusted-signing-action@v0.5.0
+        with:
+          azure-tenant-id: ${{ vars.SIGN_AZURE_TENANT_ID }}
+          azure-client-id: ${{ vars.SIGN_AZURE_CLIENT_ID }}
+          azure-client-secret: ${{ secrets.SIGN_AZURE_CLIENT_SECRET }}
+          endpoint: ${{ vars.SIGN_AZURE_ENDPOINT }}
+          trusted-signing-account-name: ${{ vars.SIGN_AZURE_ACCOUNT }}
+          certificate-profile-name: ${{ vars.SIGN_AZURE_CERT_PROFILE }}
+          files-folder: installer/output
+          files-folder-filter: exe
+          file-digest: SHA256
+          timestamp-rfc3161: ${{ vars.SIGN_TIMESTAMP_URL }}
+          timestamp-digest: SHA256
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
