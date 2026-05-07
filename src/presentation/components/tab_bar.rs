@@ -18,6 +18,7 @@ use crate::application::ports::ViewMode;
 use crate::domain::value_objects::Color;
 use crate::presentation::layout::TAB_BAR_HEIGHT;
 use crate::presentation::theme;
+use crate::presentation::ui::SplitPane;
 
 // ── Output ───────────────────────────────────────────────────────────────
 
@@ -75,6 +76,7 @@ pub fn show_tab_bar(
     overlay_visible_ids: &HashSet<usize>,
     split_ratio: f32,
     viewport_width: f32,
+    focused_pane: SplitPane,
 ) -> TabBarOutput {
     let mut output = TabBarOutput::default();
     let t = theme::active();
@@ -126,6 +128,19 @@ pub fn show_tab_bar(
                             Color32::from_rgba_unmultiplied(0, 0, 0, 4)
                         };
                         ui.painter().rect_filled(left_rect, Rounding::ZERO, left_bg);
+                        // Focus indicator: top accent line on the focused pane
+                        if focused_pane == SplitPane::Left {
+                            let focus_bar = Rect::from_min_max(
+                                left_rect.left_top(),
+                                egui::pos2(left_rect.right(), left_rect.top() + 2.0),
+                            );
+                            let focus_color = if t.is_dark {
+                                Color32::from_rgb(0, 122, 204) // VS Code blue
+                            } else {
+                                Color32::from_rgb(0, 122, 204)
+                            };
+                            ui.painter().rect_filled(focus_bar, 0.0, focus_color);
+                        }
                         let mut left_ui = ui.child_ui(left_rect, egui::Layout::left_to_right(egui::Align::Min));
                         left_ui.spacing_mut().item_spacing.x = 0.0;
                         draw_tab_strip(&mut left_ui, &left_owned, &t, left_w, TabStripMode::SplitLeft, overlay_visible_ids, &mut output);
@@ -149,6 +164,19 @@ pub fn show_tab_bar(
                             Color32::from_rgba_unmultiplied(0, 0, 0, 8)
                         };
                         ui.painter().rect_filled(right_rect, Rounding::ZERO, right_bg);
+                        // Focus indicator: top accent line on the focused pane
+                        if focused_pane == SplitPane::Right {
+                            let focus_bar = Rect::from_min_max(
+                                right_rect.left_top(),
+                                egui::pos2(right_rect.right(), right_rect.top() + 2.0),
+                            );
+                            let focus_color = if t.is_dark {
+                                Color32::from_rgb(0, 122, 204)
+                            } else {
+                                Color32::from_rgb(0, 122, 204)
+                            };
+                            ui.painter().rect_filled(focus_bar, 0.0, focus_color);
+                        }
                         let mut right_ui = ui.child_ui(right_rect, egui::Layout::left_to_right(egui::Align::Min));
                         right_ui.spacing_mut().item_spacing.x = 0.0;
                         draw_tab_strip(&mut right_ui, &right_owned, &t, right_w, TabStripMode::SplitRight { active_id: right_active }, overlay_visible_ids, &mut output);

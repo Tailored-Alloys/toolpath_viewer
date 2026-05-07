@@ -53,4 +53,16 @@ pub trait FileLoader: Send + Sync {
         }
         false
     }
+
+    /// Load all toolpath resources from a file.
+    /// For formats that contain multiple toolpath datasets (e.g. 3MF),
+    /// each is returned as a separate `(name, Toolpath)` entry.
+    /// Default implementation wraps `load()` in a single-element vec.
+    fn load_all(&self, path: &Path) -> FileResult<Vec<(String, Toolpath)>> {
+        let name = path.file_stem()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_else(|| path.display().to_string());
+        let toolpath = self.load(path)?;
+        Ok(vec![(name, toolpath)])
+    }
 }

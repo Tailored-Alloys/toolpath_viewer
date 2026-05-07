@@ -541,6 +541,23 @@ impl UiRenderer {
             self.state.total_layers = nav.total_layers;
             self.state.current_z = nav.current_z;
         }
+
+        // In split mode with right pane focused AND cameras unsynced,
+        // override layer/total/z from the right pane's tab navigation.
+        // When synced (link ON), both panes share the slider — use the left tab.
+        if self.state.view_mode == ViewMode::Split
+            && self.state.active_split_pane == SplitPane::Right
+            && !tab_manager.split_cameras_synced
+        {
+            if let Some(right_id) = tab_manager.split_right_file_id() {
+                if let Some(right_tab) = tab_manager.tab(right_id) {
+                    let nav_state = right_tab.navigation.state();
+                    self.state.current_layer = nav_state.current_index;
+                    self.state.total_layers = nav_state.total_layers;
+                    self.state.current_z = nav_state.current_z;
+                }
+            }
+        }
         // Get raw input from winit state
         let raw_input = self.winit_state.take_egui_input(window);
 
@@ -741,6 +758,7 @@ impl UiRenderer {
                     &tab_bar_overlay_visible,
                     self.state.split_ratio,
                     regions.viewport.width(),
+                    self.state.active_split_pane,
                 );
                 if tb_out.switch_to_tab.is_some() {
                     switch_tab = tb_out.switch_to_tab;
@@ -1367,6 +1385,13 @@ impl UiRenderer {
         }
 
         // ── Sync UiState changes back → active TabState ──
+        let is_split = self.state.view_mode == ViewMode::Split;
+        let synced = tab_manager.split_cameras_synced;
+        let apply_layer_to_right_only = layer_changed
+            && is_split
+            && self.state.active_split_pane == SplitPane::Right
+            && !synced;
+
         if let Some(tab) = tab_manager.active_tab_mut() {
             tab.show_slices = self.state.show_slices;
             tab.show_contours = self.state.show_contours;
@@ -1378,8 +1403,29 @@ impl UiRenderer {
             tab.total_vectors_in_layer = self.state.total_vectors_in_layer;
             tab.vector_view_playing = self.state.vector_view_playing;
             tab.playback_speed = self.state.playback_speed;
-            if layer_changed {
+            if layer_changed && !apply_layer_to_right_only {
                 tab.navigation.go_to_layer(new_layer);
+            }
+        }
+
+        // When synced (link ON), also update the right pane's tab to the same layer
+        if layer_changed && is_split && synced {
+            if let Some(right_id) = tab_manager.split_right_file_id() {
+                if let Some(right_tab) = tab_manager.tab_mut(right_id) {
+                    right_tab.navigation.go_to_layer(new_layer);
+                }
+            }
+        }
+
+        // When unsynced and right is focused, apply only to the right pane
+        if apply_layer_to_right_only {
+            if let Some(right_id) = tab_manager.split_right_file_id() {
+                if let Some(right_tab) = tab_manager.tab_mut(right_id) {
+                    right_tab.navigation.go_to_layer(new_layer);
+                }
+            }
+            if let Some(ref mut nav) = tab_manager.split_right_navigation {
+                nav.go_to_layer(new_layer);
             }
         }
 

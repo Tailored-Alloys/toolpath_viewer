@@ -38,6 +38,27 @@ impl LoadToolpathUseCase {
                 .to_string(),
         ))
     }
+
+    /// Load all toolpath resources from a file.
+    /// For multi-resource formats (e.g. 3MF), each resource is returned
+    /// as a separate `(name, Toolpath)` entry.
+    pub fn execute_multi(&self, path: &Path) -> FileResult<Vec<(String, Toolpath)>> {
+        info!("Loading toolpath(s) from: {:?}", path);
+
+        for loader in &self.loaders {
+            if loader.can_load(path) {
+                info!("Using loader for extensions: {:?}", loader.supported_extensions());
+                return loader.load_all(path);
+            }
+        }
+
+        Err(crate::application::ports::FileError::UnsupportedFormat(
+            path.extension()
+                .and_then(|e| e.to_str())
+                .unwrap_or("unknown")
+                .to_string(),
+        ))
+    }
 }
 
 #[cfg(test)]

@@ -185,6 +185,10 @@ impl TabManager {
         self.active_tab_id.and_then(|id| self.tabs.get_mut(&id))
     }
 
+    pub fn tab(&self, file_id: usize) -> Option<&TabState> {
+        self.tabs.get(&file_id)
+    }
+
     pub fn tab_mut(&mut self, file_id: usize) -> Option<&mut TabState> {
         self.tabs.get_mut(&file_id)
     }
@@ -219,6 +223,18 @@ impl TabManager {
     }
 
     // ── Split camera helpers ──
+
+    /// Get the file ID shown in the right split pane.
+    pub fn split_right_file_id(&self) -> Option<usize> {
+        let left_id = self.active_tab_id;
+        self.split_right_active_id
+            .or(self.split_partner_id)
+            .or_else(|| {
+                self.open_tab_ids.iter()
+                    .find(|&&id| Some(id) != left_id)
+                    .copied()
+            })
+    }
 
     /// Toggle whether split panes share camera/layer or are independent.
     /// When switching to unsynced, initializes right pane state from the active tab's camera.

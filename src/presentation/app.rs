@@ -20,7 +20,7 @@ use crate::domain::entities::{Toolpath, VectorType};
 use crate::domain::services::find_nearest_vector;
 use crate::domain::value_objects::{Bounds2D, Point2D};
 use crate::infrastructure::config::JsonConfigManager;
-use crate::infrastructure::file_adapters::IltLoader;
+use crate::infrastructure::file_adapters::{IltLoader, ThreemfLoader};
 use crate::infrastructure::rendering::GlRenderer;
 use crate::presentation::{
     AppEvent, AppWindow, InputAction, MouseButton, ParamRanges, WindowConfig,
@@ -187,7 +187,10 @@ impl App {
         }
 
         // Create file loader
-        let loaders: Vec<Arc<dyn FileLoader>> = vec![Arc::new(IltLoader::new())];
+        let loaders: Vec<Arc<dyn FileLoader>> = vec![
+            Arc::new(IltLoader::new()),
+            Arc::new(ThreemfLoader::new()),
+        ];
         let load_use_case = Arc::new(LoadToolpathUseCase::new(loaders));
 
         // Check for command line arguments
@@ -343,15 +346,27 @@ fn start_background_load(
         let mut errors = Vec::new();
 
         for path in paths {
-            match use_case.execute(&path) {
-                Ok(toolpath) => {
-                    let ranges = compute_param_ranges(&toolpath);
-                    let stats = toolpath.slice_stack.stats();
-                    info!(
-                        "Loaded {}: {} layers, {} vectors",
-                        path.display(), stats.layer_count, stats.total_vectors
-                    );
-                    results.push((path, toolpath, ranges));
+            match use_case.execute_multi(&path) {
+                Ok(entries) => {
+                    for (name, toolpath) in entries {
+                        let ranges = compute_param_ranges(&toolpath);
+                        let stats = toolpath.slice_stack.stats();
+                        info!(
+                            "Loaded {} ({}): {} layers, {} vectors",
+                            path.display(), name, stats.layer_count, stats.total_vectors
+                        );
+                        // For multi-resource files, use a synthetic path with the resource name
+                        let entry_path = if name.starts_with("3MF Resource") {
+                            path.with_file_name(format!(
+                                "{}::{}",
+                                path.file_name().map(|n| n.to_string_lossy()).unwrap_or_default(),
+                                name
+                            ))
+                        } else {
+                            path.clone()
+                        };
+                        results.push((entry_path, toolpath, ranges));
+                    }
                 }
                 Err(e) => {
                     error!("Failed to load {}: {}", path.display(), e);
@@ -539,7 +554,6 @@ fn handle_event(
 
                 // Effective viewport rect and view state for the pane under the cursor
                 let (eff_vp, use_right) = if let Some(ref hit) = pane_hit {
-                    ui.state.active_split_pane = hit.pane;
                     (hit.pane_rect, hit.pane == SplitPane::Right)
                 } else if is_split {
                     // Cursor is in the divider gap — skip interaction
@@ -1317,7 +1331,7 @@ fn open_file_dialog(
     }
 
     let files = rfd::FileDialog::new()
-        .add_filter("ILT/CLI Files", &["ilt", "cli"])
+        .add_filter("Toolpath Files", &["ilt", "cli", "3mf"])
         .add_filter("All Files", &["*"])
         .set_title("Open Toolpath Files")
         .pick_files();
@@ -1433,6 +1447,10 @@ fn render_frame(
 
     // ── Handle tab bar actions ──
     if let Some(switch_id) = ui_output.switch_tab {
+        // Clicking a tab in the left strip focuses the left pane
+        if ui_output.view_mode == ViewMode::Split {
+            ui.state.active_split_pane = SplitPane::Left;
+        }
         // Reopen the tab if it was closed (e.g. user clicked file in sidebar)
         if !state.tab_manager.open_tab_ids.contains(&switch_id) {
             state.tab_manager.reopen_tab(switch_id);
@@ -1560,6 +1578,7 @@ fn render_frame(
     if let Some(right_id) = ui_output.split_right_switch {
         state.tab_manager.split_right_active_id = Some(right_id);
         state.tab_manager.split_partner_id = Some(right_id);
+        ui.state.active_split_pane = SplitPane::Right;
         ui.state.hover_info = None; // clear stale tooltip from previous pane file
         state.needs_redraw = true;
     }
@@ -1632,28 +1651,48 @@ fn render_frame(
         }
     }
 
-    // Handle layer changes from slider/buttons — now routed through active tab
-    let layer_changed = if let Some(tab) = state.tab_manager.active_tab() {
+    // Handle layer changes from slider/buttons
+    let is_split = ui_output.view_mode == ViewMode::Split;
+    let synced = state.tab_manager.split_cameras_synced;
+    let right_independent = is_split
+        && ui.state.active_split_pane == SplitPane::Right
+        && !synced;
+
+    let layer_changed = if right_independent {
+        // Unsynced right pane: compare against right tab
+        state.tab_manager.split_right_file_id()
+            .and_then(|rid| state.tab_manager.tab(rid))
+            .map(|t| ui_output.layer_index != t.navigation.state().current_index)
+            .unwrap_or(false)
+    } else if let Some(tab) = state.tab_manager.active_tab() {
         ui_output.layer_index != tab.navigation.state().current_index
     } else {
         false
     };
-    // Always keep global navigation in sync with the active tab so keyboard
-    // shortcuts start from the correct position after slider interaction.
-    if state.navigation.state().current_index != ui_output.layer_index {
-        state.navigation.go_to_layer(ui_output.layer_index);
-    }
+
+    // Keep navigations in sync
     if layer_changed {
-        // The tab's navigation was already updated in run_ui sync-back
-        state.navigation.go_to_layer(ui_output.layer_index);
+        if right_independent {
+            // Unsynced right: don't touch global/left navigation
+            // (right tab already updated in run_ui sync-back)
+        } else {
+            state.navigation.go_to_layer(ui_output.layer_index);
+        }
         state.needs_redraw = true;
         // Stop playback on layer change
-        if let Some(tab) = state.tab_manager.active_tab_mut() {
-            tab.vector_view_playing = false;
-            tab.playback_time_accumulator = 0.0;
+        if !right_independent {
+            if let Some(tab) = state.tab_manager.active_tab_mut() {
+                tab.vector_view_playing = false;
+                tab.playback_time_accumulator = 0.0;
+            }
         }
         ui.state.vector_view_playing = false;
         ui.state.playback_time_accumulator = 0.0;
+    } else if !right_independent {
+        // Keep global navigation in sync with the active tab
+        if state.navigation.state().current_index != ui_output.layer_index {
+            state.navigation.go_to_layer(ui_output.layer_index);
+        }
     }
 
     // ── Vector playback advancement ──
@@ -1983,13 +2022,12 @@ fn render_frame(
                     .unwrap_or_else(|| left_view.clone())
             };
 
-            // Right pane Z: independent layer when unsynced
-            let right_z = if state.tab_manager.split_cameras_synced {
-                current_z
-            } else {
-                state.tab_manager.split_right_navigation.as_ref()
-                    .map(|nav| nav.state().current_z)
-                    .unwrap_or(current_z)
+            // Right pane Z: always use the right tab's own navigation
+            let right_z = {
+                let right_tab_z = state.tab_manager.split_right_file_id()
+                    .and_then(|rid| state.tab_manager.tab(rid))
+                    .map(|t| t.navigation.state().current_z);
+                right_tab_z.unwrap_or(current_z)
             };
 
             // Determine left and right file IDs
